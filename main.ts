@@ -1,4 +1,4 @@
-import { Plugin } from 'obsidian';
+import { Notice, Plugin, TFile } from 'obsidian';
 import { TaskScannerService } from './src/services/TaskScannerService';
 import { DailyNoteService } from './src/services/DailyNoteService';
 import { ReverseSyncService } from './src/services/ReverseSyncService';
@@ -15,24 +15,28 @@ export default class TaskSyncPlugin extends Plugin {
     private reverseSyncService!: ReverseSyncService;
     private sourceToDailyService!: SourceToDailySyncService;
     private fileWatcher!: FileWatcherService;
+    private createEventRef: import('obsidian').EventRef | null = null;
 
     async onload(): Promise<void> {
-        console.log('[TaskSync] Loading plugin');
-
         await this.loadSettings();
+
+        if (this.settings.enableDebugLogging) {
+            console.log('[TaskSync] Loading plugin');
+        }
 
         // Initialize services
         this.taskScanner = new TaskScannerService(this.app, this.settings);
         this.dailyNoteService = new DailyNoteService(this.app, this.settings);
-        this.reverseSyncService = new ReverseSyncService(this.app, this.dailyNoteService);
-        this.sourceToDailyService = new SourceToDailySyncService(this.app, this.dailyNoteService);
+        this.reverseSyncService = new ReverseSyncService(this.app, this.dailyNoteService, this.settings);
+        this.sourceToDailyService = new SourceToDailySyncService(this.app, this.dailyNoteService, this.settings);
 
-        // Set up file watcher
+        // Set up file watcher (passes changed file for incremental scanning)
         this.fileWatcher = new FileWatcherService(
             this.app,
             this.settings,
-            () => this.syncPriorityTasks(),
-            () => this.dailyNoteService.getTodaysDailyNotePath()
+            (file?: TFile) => this.syncPriorityTasks(file),
+            () => this.dailyNoteService.getTodaysDailyNotePath(),
+            (file: TFile) => this.taskScanner.isExcluded(file)
         );
 
         // Start services after Obsidian workspace is fully ready
@@ -59,7 +63,9 @@ export default class TaskSyncPlugin extends Plugin {
 
     async onunload(): Promise<void> {
         this.stopServices();
-        console.log('[TaskSync] Plugin unloaded');
+        if (this.settings.enableDebugLogging) {
+            console.log('[TaskSync] Plugin unloaded');
+        }
     }
 
     /**
@@ -68,21 +74,20 @@ export default class TaskSyncPlugin extends Plugin {
     async startServices(): Promise<void> {
         this.fileWatcher?.start();
 
-        // Listen for daily note creation
-        this.registerEvent(
-            this.app.vault.on('create', async (file) => {
-                if (file.path.endsWith('.md')) {
-                    const dailyNotePath = this.dailyNoteService.getTodaysDailyNotePath();
-                    if (dailyNotePath && file.path === dailyNotePath) {
-                        // Small delay to let the file finish being written
-                        setTimeout(async () => {
-                            await this.syncPriorityTasks();
-                            await this.initializeReverseSync();
-                        }, 500);
-                    }
+        // Listen for daily note creation (store ref for cleanup)
+        this.createEventRef = this.app.vault.on('create', async (file) => {
+            if (file.path.endsWith('.md')) {
+                const dailyNotePath = this.dailyNoteService.getTodaysDailyNotePath();
+                if (dailyNotePath && file.path === dailyNotePath) {
+                    // Small delay to let the file finish being written
+                    setTimeout(async () => {
+                        await this.syncPriorityTasks();
+                        await this.initializeReverseSync();
+                    }, 500);
                 }
-            })
-        );
+            }
+        });
+        this.registerEvent(this.createEventRef);
 
         await this.initializeReverseSync();
     }
@@ -94,12 +99,19 @@ export default class TaskSyncPlugin extends Plugin {
         this.fileWatcher?.stop();
         this.reverseSyncService?.stopWatching();
         this.sourceToDailyService?.stopWatching();
+
+        // Clean up create event listener
+        if (this.createEventRef) {
+            this.app.vault.offref(this.createEventRef);
+            this.createEventRef = null;
+        }
     }
 
     /**
      * Main sync operation: Vault → Daily Note
+     * @param file Optional file for incremental scanning (single file changed)
      */
-    private async syncPriorityTasks(): Promise<void> {
+    private async syncPriorityTasks(file?: TFile): Promise<void> {
         if (!this.settings.enabled) return;
 
         const dailyNote = await this.dailyNoteService.getTodaysDailyNote();
@@ -107,19 +119,23 @@ export default class TaskSyncPlugin extends Plugin {
             return;
         }
 
-        // Scan vault (uses cache optimization)
-        const allTasks = await this.taskScanner.scanVault();
+        // Scan vault or single file (incremental scanning)
+        const allTasks = await this.taskScanner.scanVault(file);
 
         // Filter by priority settings
         const filteredTasks = this.filterByPriority(allTasks);
 
-        // Apply task limit
-        const limitedTasks = this.settings.taskLimit > 0
+        // Apply task limit ONLY for full vault scans
+        // For incremental scans, pass all tasks - the limit shouldn't cut off new tasks
+        const limitedTasks = (!file && this.settings.taskLimit > 0)
             ? filteredTasks.slice(0, this.settings.taskLimit)
             : filteredTasks;
 
         // Append new tasks (deduplication handled inside)
-        await this.dailyNoteService.appendNewTasks(dailyNote, limitedTasks);
+        const count = await this.dailyNoteService.appendNewTasks(dailyNote, limitedTasks);
+        if (count > 0) {
+            new Notice(`Task Sync: Added ${count} task${count > 1 ? 's' : ''}`);
+        }
     }
 
     /**
@@ -147,6 +163,13 @@ export default class TaskSyncPlugin extends Plugin {
 
     async loadSettings(): Promise<void> {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+        // Validate debounceMs (clamp to 500-10000)
+        if (this.settings.debounceMs < 500) {
+            this.settings.debounceMs = 500;
+        } else if (this.settings.debounceMs > 10000) {
+            this.settings.debounceMs = 10000;
+        }
     }
 
     async saveSettings(): Promise<void> {

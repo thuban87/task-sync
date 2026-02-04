@@ -16,24 +16,31 @@ export class TaskScannerService {
     /**
      * Scan entire vault for uncompleted priority tasks.
      * Uses metadataCache to skip files without list items.
+     * If a specific file is provided, only scans that file.
+     * @param file Optional file to scan (for incremental scanning)
      * @returns Array of PriorityTask objects, sorted by priority (highest first)
      */
-    async scanVault(): Promise<PriorityTask[]> {
+    async scanVault(file?: TFile): Promise<PriorityTask[]> {
+        // If specific file provided, use incremental scan
+        if (file) {
+            return this.scanFile(file);
+        }
+
         const allTasks: PriorityTask[] = [];
         const files = this.app.vault.getMarkdownFiles();
 
-        for (const file of files) {
+        for (const f of files) {
             // Skip excluded files
-            if (this.isExcluded(file)) {
+            if (this.isExcluded(f)) {
                 continue;
             }
 
             // Skip files without list items (performance optimization)
-            if (!this.hasListItems(file)) {
+            if (!this.hasListItems(f)) {
                 continue;
             }
 
-            const tasks = await this.parseFile(file);
+            const tasks = await this.parseFile(f);
             allTasks.push(...tasks);
         }
 
@@ -43,6 +50,29 @@ export class TaskScannerService {
             if (a.priority !== 'highest' && b.priority === 'highest') return 1;
             return 0;
         });
+    }
+
+    /**
+     * Scan a single file for priority tasks.
+     * Used for incremental scanning when only one file changed.
+     * NOTE: Skips hasListItems() cache check since cache may be stale after file modification.
+     * @param file The file to scan
+     * @returns Array of PriorityTask objects from this file
+     */
+    async scanFile(file: TFile): Promise<PriorityTask[]> {
+        if (this.isExcluded(file)) {
+            if (this.settings.enableDebugLogging) {
+                console.log(`[TaskSync] scanFile: ${file.path} is excluded, skipping`);
+            }
+            return [];
+        }
+        // NOTE: Don't check hasListItems() here - cache may be stale after file modification
+        // The parseFile call is cheap enough for a single file
+        const tasks = await this.parseFile(file);
+        if (this.settings.enableDebugLogging) {
+            console.log(`[TaskSync] scanFile: ${file.path} found ${tasks.length} priority tasks`);
+        }
+        return tasks;
     }
 
     /**
@@ -91,33 +121,40 @@ export class TaskScannerService {
      * Only called if hasListItems() returns true.
      */
     private async parseFile(file: TFile): Promise<PriorityTask[]> {
-        const tasks: PriorityTask[] = [];
-        const content = await this.app.vault.read(file);
-        const lines = content.split('\n');
+        try {
+            const tasks: PriorityTask[] = [];
+            const content = await this.app.vault.read(file);
+            const lines = content.split('\n');
 
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
 
-            // Skip if not an uncompleted checkbox
-            if (!TaskParser.isUncompleted(line)) {
-                continue;
+                // Skip if not an uncompleted checkbox
+                if (!TaskParser.isUncompleted(line)) {
+                    continue;
+                }
+
+                // Check for priority marker
+                const priority = TaskParser.extractPriority(line);
+                if (!priority) {
+                    continue;
+                }
+
+                tasks.push({
+                    originalLine: line,
+                    cleanText: TaskParser.cleanTaskText(line),
+                    filePath: file.path,
+                    lineNumber: i,
+                    priority,
+                });
             }
 
-            // Check for priority marker
-            const priority = TaskParser.extractPriority(line);
-            if (!priority) {
-                continue;
+            return tasks;
+        } catch (error) {
+            if (this.settings.enableDebugLogging) {
+                console.warn(`[TaskSync] Failed to parse file ${file.path}:`, error);
             }
-
-            tasks.push({
-                originalLine: line,
-                cleanText: TaskParser.cleanTaskText(line),
-                filePath: file.path,
-                lineNumber: i,
-                priority,
-            });
+            return [];
         }
-
-        return tasks;
     }
 }

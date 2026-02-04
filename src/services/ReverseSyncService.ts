@@ -2,6 +2,7 @@ import { App, TFile, EventRef } from 'obsidian';
 import { DailyNoteService } from './DailyNoteService';
 import { TaskParser, TaskState } from '../utils/TaskParser';
 import { CHECKBOX_REGEX } from '../constants';
+import { PluginSettings } from '../settings';
 
 /**
  * Service for two-way checkbox sync between daily note and source files.
@@ -17,7 +18,8 @@ export class ReverseSyncService {
 
     constructor(
         private app: App,
-        private dailyNoteService: DailyNoteService
+        private dailyNoteService: DailyNoteService,
+        private settings: PluginSettings
     ) { }
 
     /**
@@ -28,8 +30,15 @@ export class ReverseSyncService {
         this.dailyNotePath = dailyNote.path;
 
         // Build initial cache using TaskParser
-        const content = await this.app.vault.read(dailyNote);
-        this.taskStateCache = TaskParser.parseAllTaskStates(content, this.app);
+        try {
+            const content = await this.app.vault.read(dailyNote);
+            this.taskStateCache = TaskParser.parseAllTaskStates(content, this.app);
+        } catch (error) {
+            if (this.settings.enableDebugLogging) {
+                console.warn('[TaskSync] Failed to read daily note for reverse sync:', error);
+            }
+            this.taskStateCache = new Map();
+        }
 
         // Set up file watcher for daily note only
         this.eventRef = this.app.vault.on('modify', async (file) => {
@@ -61,25 +70,31 @@ export class ReverseSyncService {
             return;
         }
 
-        const content = await this.app.vault.read(file);
-        const newState = TaskParser.parseAllTaskStates(content, this.app);
+        try {
+            const content = await this.app.vault.read(file);
+            const newState = TaskParser.parseAllTaskStates(content, this.app);
 
-        // Find checkboxes that changed using multi-signal matching
-        const changedTasks = TaskParser.findChangedTasks(this.taskStateCache, newState);
+            // Find checkboxes that changed using multi-signal matching
+            const changedTasks = TaskParser.findChangedTasks(this.taskStateCache, newState);
 
-        if (changedTasks.length > 0) {
-            this.isProcessing = true;
-            try {
-                for (const { state, nowChecked } of changedTasks) {
-                    await this.syncToggleToSource(state, nowChecked);
+            if (changedTasks.length > 0) {
+                this.isProcessing = true;
+                try {
+                    for (const { state, nowChecked } of changedTasks) {
+                        await this.syncToggleToSource(state, nowChecked);
+                    }
+                } finally {
+                    this.isProcessing = false;
                 }
-            } finally {
-                this.isProcessing = false;
+            }
+
+            // Update cache to new state
+            this.taskStateCache = newState;
+        } catch (error) {
+            if (this.settings.enableDebugLogging) {
+                console.warn('[TaskSync] Failed to process daily note modification:', error);
             }
         }
-
-        // Update cache to new state
-        this.taskStateCache = newState;
     }
 
     /**
@@ -91,58 +106,74 @@ export class ReverseSyncService {
      */
     async syncToggleToSource(state: TaskState, checked: boolean): Promise<boolean> {
         if (!state.sourcePath) {
-            console.debug('[TaskSync] No source path found in line, skipping reverse sync');
+            if (this.settings.enableDebugLogging) {
+                console.debug('[TaskSync] No source path found in line, skipping reverse sync');
+            }
             return false;
         }
 
         // Get source file
         const sourceFile = this.app.vault.getAbstractFileByPath(state.sourcePath);
         if (!(sourceFile instanceof TFile)) {
-            console.debug(`[TaskSync] Source file not found: ${state.sourcePath}`);
-            return false;
-        }
-
-        // Read source file content
-        const content = await this.app.vault.read(sourceFile);
-        const lines = content.split('\n');
-
-        // Find matching task line by cleanText
-        let matchedIndex = -1;
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (!TaskParser.isCheckbox(line)) continue;
-
-            const lineCleanText = TaskParser.cleanTaskText(line);
-            if (lineCleanText === state.cleanText) {
-                matchedIndex = i;
-                break;
+            if (this.settings.enableDebugLogging) {
+                console.debug(`[TaskSync] Source file not found: ${state.sourcePath}`);
             }
-        }
-
-        if (matchedIndex === -1) {
-            console.debug(`[TaskSync] No matching task found in source for: ${state.cleanText}`);
             return false;
         }
 
-        // Update the checkbox state in source
-        const oldLine = lines[matchedIndex];
-        let newLine: string;
-        if (checked) {
-            newLine = oldLine.replace(/^(\s*-\s*)\[ \]/, '$1[x]');
-        } else {
-            newLine = oldLine.replace(/^(\s*-\s*)\[[xX]\]/, '$1[ ]');
-        }
+        try {
+            // Read source file content
+            const content = await this.app.vault.read(sourceFile);
+            const lines = content.split('\n');
 
-        if (oldLine === newLine) {
-            console.debug('[TaskSync] Source line already in correct state');
+            // Find matching task line by cleanText
+            let matchedIndex = -1;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (!TaskParser.isCheckbox(line)) continue;
+
+                const lineCleanText = TaskParser.cleanTaskText(line);
+                if (lineCleanText === state.cleanText) {
+                    matchedIndex = i;
+                    break;
+                }
+            }
+
+            if (matchedIndex === -1) {
+                if (this.settings.enableDebugLogging) {
+                    console.debug(`[TaskSync] No matching task found in source for: ${state.cleanText}`);
+                }
+                return false;
+            }
+
+            // Update the checkbox state in source
+            const oldLine = lines[matchedIndex];
+            let newLine: string;
+            if (checked) {
+                newLine = oldLine.replace(/^(\s*-\s*)\[ \]/, '$1[x]');
+            } else {
+                newLine = oldLine.replace(/^(\s*-\s*)\[[xX]\]/, '$1[ ]');
+            }
+
+            if (oldLine === newLine) {
+                if (this.settings.enableDebugLogging) {
+                    console.debug('[TaskSync] Source line already in correct state');
+                }
+                return false;
+            }
+
+            lines[matchedIndex] = newLine;
+            await this.app.vault.modify(sourceFile, lines.join('\n'));
+
+            if (this.settings.enableDebugLogging) {
+                console.debug(`[TaskSync] Synced ${checked ? 'check' : 'uncheck'} to ${state.sourcePath}`);
+            }
+            return true;
+        } catch (error) {
+            if (this.settings.enableDebugLogging) {
+                console.warn(`[TaskSync] Failed to sync toggle to source file ${state.sourcePath}:`, error);
+            }
             return false;
         }
-
-        // Write back to source file
-        lines[matchedIndex] = newLine;
-        await this.app.vault.modify(sourceFile, lines.join('\n'));
-
-        console.debug(`[TaskSync] Synced ${checked ? 'check' : 'uncheck'} to ${state.sourcePath}`);
-        return true;
     }
 }
