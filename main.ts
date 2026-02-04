@@ -15,6 +15,7 @@ export default class TaskSyncPlugin extends Plugin {
     private reverseSyncService!: ReverseSyncService;
     private sourceToDailyService!: SourceToDailySyncService;
     private fileWatcher!: FileWatcherService;
+    private createEventRef: import('obsidian').EventRef | null = null;
 
     async onload(): Promise<void> {
         console.log('[TaskSync] Loading plugin');
@@ -24,7 +25,7 @@ export default class TaskSyncPlugin extends Plugin {
         // Initialize services
         this.taskScanner = new TaskScannerService(this.app, this.settings);
         this.dailyNoteService = new DailyNoteService(this.app, this.settings);
-        this.reverseSyncService = new ReverseSyncService(this.app, this.dailyNoteService);
+        this.reverseSyncService = new ReverseSyncService(this.app, this.dailyNoteService, this.settings);
         this.sourceToDailyService = new SourceToDailySyncService(this.app, this.dailyNoteService);
 
         // Set up file watcher (passes changed file for incremental scanning)
@@ -69,21 +70,20 @@ export default class TaskSyncPlugin extends Plugin {
     async startServices(): Promise<void> {
         this.fileWatcher?.start();
 
-        // Listen for daily note creation
-        this.registerEvent(
-            this.app.vault.on('create', async (file) => {
-                if (file.path.endsWith('.md')) {
-                    const dailyNotePath = this.dailyNoteService.getTodaysDailyNotePath();
-                    if (dailyNotePath && file.path === dailyNotePath) {
-                        // Small delay to let the file finish being written
-                        setTimeout(async () => {
-                            await this.syncPriorityTasks();
-                            await this.initializeReverseSync();
-                        }, 500);
-                    }
+        // Listen for daily note creation (store ref for cleanup)
+        this.createEventRef = this.app.vault.on('create', async (file) => {
+            if (file.path.endsWith('.md')) {
+                const dailyNotePath = this.dailyNoteService.getTodaysDailyNotePath();
+                if (dailyNotePath && file.path === dailyNotePath) {
+                    // Small delay to let the file finish being written
+                    setTimeout(async () => {
+                        await this.syncPriorityTasks();
+                        await this.initializeReverseSync();
+                    }, 500);
                 }
-            })
-        );
+            }
+        });
+        this.registerEvent(this.createEventRef);
 
         await this.initializeReverseSync();
     }
@@ -95,6 +95,12 @@ export default class TaskSyncPlugin extends Plugin {
         this.fileWatcher?.stop();
         this.reverseSyncService?.stopWatching();
         this.sourceToDailyService?.stopWatching();
+
+        // Clean up create event listener
+        if (this.createEventRef) {
+            this.app.vault.offref(this.createEventRef);
+            this.createEventRef = null;
+        }
     }
 
     /**
@@ -150,6 +156,13 @@ export default class TaskSyncPlugin extends Plugin {
 
     async loadSettings(): Promise<void> {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+        // Validate debounceMs (clamp to 500-10000)
+        if (this.settings.debounceMs < 500) {
+            this.settings.debounceMs = 500;
+        } else if (this.settings.debounceMs > 10000) {
+            this.settings.debounceMs = 10000;
+        }
     }
 
     async saveSettings(): Promise<void> {

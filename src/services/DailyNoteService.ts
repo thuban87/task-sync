@@ -59,7 +59,9 @@ export class DailyNoteService {
      * @returns Number of tasks actually appended
      */
     async appendNewTasks(dailyNote: TFile, tasks: PriorityTask[]): Promise<number> {
-        console.log(`[TaskSync] appendNewTasks called with ${tasks.length} tasks`);
+        if (this.settings.enableDebugLogging) {
+            console.log(`[TaskSync] appendNewTasks called with ${tasks.length} tasks`);
+        }
 
         const content = await this.app.vault.read(dailyNote);
 
@@ -76,11 +78,15 @@ export class DailyNoteService {
         const existingCleanTexts = new Set(
             existingTasks.filter(t => !t.completed).map(t => t.cleanText)
         );
-        console.log(`[TaskSync] Found ${existingTasks.length} existing tasks (${existingCleanTexts.size} uncompleted)`);
+        if (this.settings.enableDebugLogging) {
+            console.log(`[TaskSync] Found ${existingTasks.length} existing tasks (${existingCleanTexts.size} uncompleted)`);
+        }
 
         // Filter to only new tasks
         const newTasks = tasks.filter(t => !existingCleanTexts.has(t.cleanText));
-        console.log(`[TaskSync] After deduplication: ${newTasks.length} new tasks to add`);
+        if (this.settings.enableDebugLogging) {
+            console.log(`[TaskSync] After deduplication: ${newTasks.length} new tasks to add`);
+        }
 
         if (newTasks.length === 0) {
             console.debug('[TaskSync] No new tasks to sync');
@@ -95,7 +101,9 @@ export class DailyNoteService {
         const newContent = content.slice(0, insertPoint) + taskBlock + content.slice(insertPoint);
         await this.app.vault.modify(dailyNote, newContent);
 
-        console.debug(`[TaskSync] Appended ${newTasks.length} new tasks`);
+        if (this.settings.enableDebugLogging) {
+            console.debug(`[TaskSync] Appended ${newTasks.length} new tasks`);
+        }
         return newTasks.length;
     }
 

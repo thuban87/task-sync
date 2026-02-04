@@ -2,6 +2,7 @@ import { App, TFile, EventRef } from 'obsidian';
 import { DailyNoteService } from './DailyNoteService';
 import { TaskParser, TaskState } from '../utils/TaskParser';
 import { CHECKBOX_REGEX } from '../constants';
+import { PluginSettings } from '../settings';
 
 /**
  * Service for two-way checkbox sync between daily note and source files.
@@ -17,7 +18,8 @@ export class ReverseSyncService {
 
     constructor(
         private app: App,
-        private dailyNoteService: DailyNoteService
+        private dailyNoteService: DailyNoteService,
+        private settings: PluginSettings
     ) { }
 
     /**
@@ -138,11 +140,11 @@ export class ReverseSyncService {
             return false;
         }
 
-        // Write back to source file
-        lines[matchedIndex] = newLine;
         await this.app.vault.modify(sourceFile, lines.join('\n'));
 
-        console.debug(`[TaskSync] Synced ${checked ? 'check' : 'uncheck'} to ${state.sourcePath}`);
+        if (this.settings.enableDebugLogging) {
+            console.debug(`[TaskSync] Synced ${checked ? 'check' : 'uncheck'} to ${state.sourcePath}`);
+        }
         return true;
     }
 }

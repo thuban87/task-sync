@@ -34,6 +34,9 @@ export interface PluginSettings {
 
     /** File names to exclude from scanning (matches any directory) */
     excludedFileNames: string[];
+
+    /** Enable verbose debug logging in console */
+    enableDebugLogging: boolean;
 }
 
 /**
@@ -50,6 +53,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
     excludedFolders: [],
     excludedFiles: [],
     excludedFileNames: [],
+    enableDebugLogging: false,
 };
 
 /**
@@ -57,6 +61,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
  */
 export class TaskSyncSettingTab extends PluginSettingTab {
     plugin: TaskSyncPlugin;
+    private sectionHeaderDebounce: ReturnType<typeof setTimeout> | null = null;
 
     constructor(app: App, plugin: TaskSyncPlugin) {
         super(app, plugin);
@@ -85,16 +90,22 @@ export class TaskSyncSettingTab extends PluginSettingTab {
                     }
                 }));
 
-        // Section header
+        // Section header (with debounce to prevent rapid saves)
         new Setting(containerEl)
             .setName('Section header')
             .setDesc('The header in your daily note where tasks will be synced')
             .addText(text => text
                 .setPlaceholder('## ⚡ High Priority Tasks')
                 .setValue(this.plugin.settings.sectionHeader)
-                .onChange(async (value) => {
-                    this.plugin.settings.sectionHeader = value;
-                    await this.plugin.saveSettings();
+                .onChange((value) => {
+                    // Debounce saves to prevent rapid file writes
+                    if (this.sectionHeaderDebounce) {
+                        clearTimeout(this.sectionHeaderDebounce);
+                    }
+                    this.sectionHeaderDebounce = setTimeout(async () => {
+                        this.plugin.settings.sectionHeader = value;
+                        await this.plugin.saveSettings();
+                    }, 300);
                 }));
 
         // Task limit
@@ -159,6 +170,19 @@ export class TaskSyncSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.enableReverseSync)
                 .onChange(async (value) => {
                     this.plugin.settings.enableReverseSync = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        containerEl.createEl('h3', { text: 'Developer' });
+
+        // Debug logging toggle
+        new Setting(containerEl)
+            .setName('Enable debug logging')
+            .setDesc('Show verbose logs in the developer console (Ctrl+Shift+I)')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.enableDebugLogging)
+                .onChange(async (value) => {
+                    this.plugin.settings.enableDebugLogging = value;
                     await this.plugin.saveSettings();
                 }));
 

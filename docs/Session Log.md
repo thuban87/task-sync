@@ -195,15 +195,46 @@ task-sync/
 
 ---
 
+## 2026-02-03 - Polish Phase 3: Polish & Cleanup
+
+**Focus:** Clean up rough edges, fix memory leaks, add debug toggle
+
+### Completed:
+
+- ✅ Added `enableDebugLogging` setting to `PluginSettings`
+- ✅ Added UI toggle for debug logging in settings (under "Developer" section)
+- ✅ Gated verbose logs behind debug setting (troubleshooting logs remain visible)
+- ✅ Added debounce to section header text input (300ms)
+- ✅ Validated `debounceMs` on settings load (clamped to 500-10000)
+- ✅ Cleaned up `create` event listener in `stopServices()` (stored ref for proper cleanup)
+- ✅ Updated `ReverseSyncService` to accept settings for debug log gating
+
+### Files Changed:
+
+**Modified:**
+- `src/settings.ts` - Added `enableDebugLogging` field, debounce for section header, new "Developer" settings section
+- `main.ts` - Added debounceMs validation, stored createEventRef for cleanup
+- `src/services/DailyNoteService.ts` - Gated verbose logs behind `enableDebugLogging`
+- `src/services/ReverseSyncService.ts` - Added settings parameter, gated success log
+
+### Testing Notes:
+
+- ✅ Build passes (`npm run build`)
+- ✅ Debug logging toggle visible in settings
+- ✅ Section header changes debounced (no rapid saves)
+
+---
+
 ## Next Session Prompt
 
 ```
 Continue work on Task Sync plugin polish.
 
-Focus: Phase 3 - Polish & Cleanup
-- Add enableDebugLogging setting and gate verbose logs
-- Add debounce to section header input
-- Clean up event listeners and memory leaks
+Focus: Phase 4 - Optional Hardening
+- Enable TypeScript strict mode
+- Fix regex global flag issues
+- Add sync status notice
+- Add error handling to file operations
 
 Reference: docs/Polish Implementation Roadmap.md
 ```
@@ -226,7 +257,7 @@ refactor: centralize task parsing + improve matching logic
 Files changed: TaskParser.ts (new), 4 services refactored, settings.ts
 ```
 
-### Phase 2 (current):
+### Phase 2 (previous):
 ```
 perf: implement incremental scanning for file changes
 
@@ -238,4 +269,17 @@ perf: implement incremental scanning for file changes
 
 Performance: file edits now scan 1 file instead of entire vault
 Files changed: TaskScannerService, FileWatcherService, main.ts
+```
+
+### Phase 3 (current):
+```
+chore: add debug logging toggle and cleanup memory leaks
+
+- Add enableDebugLogging setting with UI toggle
+- Gate verbose console logs behind debug setting
+- Add 300ms debounce to section header input
+- Validate debounceMs on load (clamp 500-10000)
+- Fix event listener cleanup in stopServices()
+
+Files changed: settings.ts, main.ts, DailyNoteService.ts, ReverseSyncService.ts
 ```

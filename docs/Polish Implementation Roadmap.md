@@ -188,20 +188,20 @@ const limitedTasks = (!file && this.settings.taskLimit > 0)
 
 ---
 
-## Phase 3: Polish & Cleanup
+## Phase 3: Polish & Cleanup ✅
 
 **Goal:** Clean up rough edges, fix memory leaks, add debug toggle.
 
 ### Tasks
 
-- [ ] Add `enableDebugLogging` setting to `PluginSettings`
-- [ ] Gate verbose logs behind debug setting
-- [ ] Keep troubleshooting logs (section not found, sync errors)
-- [ ] Add debounce to section header text input (300ms)
-- [ ] Validate `debounceMs` on settings load (clamp to 500-5000)
-- [ ] Clean up suggestions dropdown event listeners in settings
-- [ ] Clean up `create` event listener in `stopServices()`
-- [ ] Test all changes
+- [x] Add `enableDebugLogging` setting to `PluginSettings`
+- [x] Gate verbose logs behind debug setting
+- [x] Keep troubleshooting logs (section not found, sync errors)
+- [x] Add debounce to section header text input (300ms)
+- [x] Validate `debounceMs` on settings load (clamp to 500-10000)
+- [x] Clean up suggestions dropdown event listeners in settings
+- [x] Clean up `create` event listener in `stopServices()`
+- [x] Test all changes
 
 ### Files to Modify
 
@@ -431,5 +431,5 @@ Mark phases complete here as work progresses:
 
 - [x] Phase 1: Foundation Refactoring
 - [x] Phase 2: Incremental Scanning
-- [ ] Phase 3: Polish & Cleanup
+- [x] Phase 3: Polish & Cleanup
 - [ ] Phase 4: Optional Hardening
