@@ -1,0 +1,34 @@
+{
+    "name": "task-sync",
+    "version": "0.1.0",
+    "description": "Syncs high-priority tasks from across your vault into your daily note",
+    "main": "main.js",
+    "scripts": {
+        "dev": "node esbuild.config.mjs",
+        "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+        "deploy:test": "npm run build && node deploy.mjs test",
+        "deploy:staging": "npm run build && node deploy.mjs staging",
+        "deploy:production": "npm run build && node deploy.mjs production",
+        "version": "node version-bump.mjs && git add manifest.json versions.json"
+    },
+    "keywords": [
+        "obsidian",
+        "plugin",
+        "tasks",
+        "daily-notes",
+        "sync"
+    ],
+    "author": "Brad Wales",
+    "license": "MIT",
+    "devDependencies": {
+        "@types/node": "^20.10.0",
+        "builtin-modules": "^3.3.0",
+        "esbuild": "^0.19.0",
+        "obsidian": "latest",
+        "tslib": "^2.6.0",
+        "typescript": "^5.3.0"
+    },
+    "dependencies": {
+        "obsidian-daily-notes-interface": "^0.9.4"
+    }
+}
