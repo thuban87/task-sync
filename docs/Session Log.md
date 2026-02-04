@@ -158,23 +158,61 @@ task-sync/
 
 ---
 
+## 2026-02-03 - Polish Phase 2: Incremental Scanning
+
+**Focus:** Performance optimization - only scan files that changed
+
+### Completed:
+
+- ✅ Modified `TaskScannerService.scanVault()` to accept optional `file?: TFile`
+- ✅ Added `scanFile(file: TFile)` method for single-file scanning
+- ✅ Updated `FileWatcherService` to pass changed file to scanner
+- ✅ Added exclusion check to `FileWatcherService.shouldTriggerSync()`
+- ✅ Fixed stale cache bug - `scanFile()` skips `hasListItems()` check
+- ✅ Fixed multi-file debounce - tracks pending file, falls back to full scan
+- ✅ Fixed `taskLimit` bug - limit only applies to full vault scans
+
+### Files Changed:
+
+**Modified:**
+- `src/services/TaskScannerService.ts` - Added `scanFile()` method, modified `scanVault()` signature
+- `src/services/FileWatcherService.ts` - Passes file to callback, checks exclusions, tracks pending files
+- `src/services/DailyNoteService.ts` - Added debug logging (temporary)
+- `main.ts` - Updated callback, fixed taskLimit to only apply on full scans
+
+### Bugs Fixed:
+
+1. **Stale metadata cache** - `hasListItems()` uses cache which may not be updated after file modification; fixed by skipping cache check for incremental scans
+2. **Task limit truncating new tasks** - `taskLimit` was applied before deduplication, cutting off new tasks; fixed by only applying limit to full vault scans
+
+### Testing Notes:
+
+- ✅ Build passes
+- ✅ Excluded files don't trigger scans
+- ✅ Non-excluded file changes only scan that file
+- ✅ New tasks sync automatically to daily note
+- ✅ Manual sync still performs full vault scan
+
+---
+
 ## Next Session Prompt
 
 ```
 Continue work on Task Sync plugin polish.
 
-Focus: Phase 2 - Incremental Scanning
-- Modify TaskScannerService to support single-file scanning
-- Update FileWatcherService to pass changed file and check exclusions
-- Goal: Only scan files that actually changed
+Focus: Phase 3 - Polish & Cleanup
+- Add enableDebugLogging setting and gate verbose logs
+- Add debounce to section header input
+- Clean up event listeners and memory leaks
 
 Reference: docs/Polish Implementation Roadmap.md
 ```
 
 ---
 
-## Git Commit Message
+## Git Commit Messages
 
+### Phase 1 (previous):
 ```
 refactor: centralize task parsing + improve matching logic
 
@@ -186,4 +224,18 @@ refactor: centralize task parsing + improve matching logic
 - Increase max debounce slider 5000ms → 10000ms
 
 Files changed: TaskParser.ts (new), 4 services refactored, settings.ts
+```
+
+### Phase 2 (current):
+```
+perf: implement incremental scanning for file changes
+
+- Add scanFile() method for single-file scanning
+- FileWatcherService now passes changed file to sync callback
+- Skip excluded files at watcher level (early bailout)
+- Fix stale cache: skip hasListItems() for incremental scans
+- Fix taskLimit: only apply to full vault scans, not incremental
+
+Performance: file edits now scan 1 file instead of entire vault
+Files changed: TaskScannerService, FileWatcherService, main.ts
 ```

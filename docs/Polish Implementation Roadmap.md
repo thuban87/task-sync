@@ -18,37 +18,43 @@ This document outlines the refactoring and polish work for the Task Sync plugin,
 
 ---
 
-## Phase 1: Foundation Refactoring
+## Phase 1: Foundation Refactoring ✅
 
 **Goal:** Eliminate 4x duplication of cleaning logic and add robust task matching.
 
 ### Tasks
 
-- [ ] Create `src/utils/TaskParser.ts` with shared logic
-- [ ] Move `cleanTaskText()` to TaskParser (currently duplicated in 4 files)
-- [ ] Move `extractPriority()` to TaskParser
-- [ ] Move `extractSourcePath()` to TaskParser  
-- [ ] Add `matchTasks()` function for reconciliation (cleanText + priority + line signals)
-- [ ] Refactor `TaskScannerService.ts` to use TaskParser
-- [ ] Refactor `DailyNoteService.ts` to use TaskParser
-- [ ] Refactor `ReverseSyncService.ts` to use TaskParser
-- [ ] Refactor `SourceToDailySyncService.ts` to use TaskParser
-- [ ] Update imports and verify build passes
-- [ ] Test two-way sync still works
+- [x] Create `src/utils/TaskParser.ts` with shared logic
+- [x] Move `cleanTaskText()` to TaskParser (currently duplicated in 4 files)
+- [x] Move `extractPriority()` to TaskParser
+- [x] Move `extractSourcePath()` to TaskParser  
+- [x] Add `matchTasks()` function for reconciliation (cleanText + priority + line signals)
+- [x] Refactor `TaskScannerService.ts` to use TaskParser
+- [x] Refactor `DailyNoteService.ts` to use TaskParser
+- [x] Refactor `ReverseSyncService.ts` to use TaskParser
+- [x] Refactor `SourceToDailySyncService.ts` to use TaskParser
+- [x] Update imports and verify build passes
+- [x] Test two-way sync still works
 
-### Files to Create
+### Additional Work (2026-02-03)
+
+- [x] Increased default debounce from 2000ms → 3500ms
+- [x] Increased max debounce slider from 5000ms → 10000ms
+
+### Files Created
 
 ```
 src/utils/TaskParser.ts
 ```
 
-### Files to Modify
+### Files Modified
 
 ```
 src/services/TaskScannerService.ts
 src/services/DailyNoteService.ts
 src/services/ReverseSyncService.ts
 src/services/SourceToDailySyncService.ts
+src/settings.ts
 ```
 
 ### Implementation Notes
@@ -87,43 +93,50 @@ export class TaskParser {
 
 ### Verification
 
-1. `npm run build` passes
-2. Create task in source file → appears in daily note
-3. Check task in daily note → source file updates
-4. Check task in source file → daily note updates
-5. Add new line above task → sync still works (tests new matching)
+- [x] `npm run build` passes
+- [x] Create task in source file → appears in daily note
+- [x] Check task in daily note → source file updates
+- [x] Check task in source file → daily note updates
+- [x] Add new line above task → sync still works (tests new matching)
 
 ---
 
-## Phase 2: Incremental Scanning
+## Phase 2: Incremental Scanning ✅
 
 **Goal:** Only scan files that changed instead of full vault scan.
 
 ### Tasks
 
-- [ ] Modify `TaskScannerService.scanVault()` to accept optional `file?: TFile`
-- [ ] Add `scanFile(file: TFile)` method for single-file scanning
-- [ ] Update `FileWatcherService` to pass changed file to scanner
-- [ ] Add exclusion check to `FileWatcherService.shouldTriggerSync()`
-- [ ] Test that excluded files don't trigger scans
-- [ ] Test that non-excluded file changes only scan that file
+- [x] Modify `TaskScannerService.scanVault()` to accept optional `file?: TFile`
+- [x] Add `scanFile(file: TFile)` method for single-file scanning
+- [x] Update `FileWatcherService` to pass changed file to scanner
+- [x] Add exclusion check to `FileWatcherService.shouldTriggerSync()`
+- [x] Test that excluded files don't trigger scans
+- [x] Test that non-excluded file changes only scan that file
 
-### Files to Modify
+### Additional Work (2026-02-03)
+
+- [x] Fixed stale cache bug: `scanFile()` skips `hasListItems()` check since metadata cache may not be updated yet
+- [x] Fixed multi-file debounce: tracks pending file, falls back to full scan if multiple files change
+- [x] Fixed taskLimit bug: limit only applies to full vault scans, not incremental scans
+
+### Files Modified
 
 ```
 src/services/TaskScannerService.ts
 src/services/FileWatcherService.ts
-main.ts (update sync call to pass file)
+src/services/DailyNoteService.ts (debug logging)
+main.ts (incremental sync + taskLimit fix)
 ```
 
 ### Implementation Notes
 
 **TaskScannerService changes:**
 ```typescript
-// New single-file scan method
+// New single-file scan method - skips cache for freshness
 async scanFile(file: TFile): Promise<PriorityTask[]> {
     if (this.isExcluded(file)) return [];
-    if (!this.hasListItems(file)) return [];
+    // NOTE: Don't check hasListItems() - cache may be stale
     return this.parseFile(file);
 }
 
@@ -158,12 +171,20 @@ private handleModify(file: TFile): void {
 }
 ```
 
+**main.ts changes:**
+```typescript
+// Task limit ONLY applies to full vault scans
+const limitedTasks = (!file && this.settings.taskLimit > 0)
+    ? filteredTasks.slice(0, this.settings.taskLimit)
+    : filteredTasks;
+```
+
 ### Verification
 
-1. Edit excluded file → no console activity, no scan
-2. Edit non-excluded file → only that file scanned (check debug logs)
-3. Full vault scan still works on plugin load and daily note creation
-4. Performance feels snappier on large vaults
+1. ✅ Edit excluded file → no console activity, no scan
+2. ✅ Edit non-excluded file → only that file scanned
+3. ✅ New tasks sync automatically
+4. ✅ Full vault scan still works on plugin load and manual sync
 
 ---
 
@@ -409,6 +430,6 @@ Reference: docs/Polish Implementation Roadmap.md
 Mark phases complete here as work progresses:
 
 - [x] Phase 1: Foundation Refactoring
-- [ ] Phase 2: Incremental Scanning
+- [x] Phase 2: Incremental Scanning
 - [ ] Phase 3: Polish & Cleanup
 - [ ] Phase 4: Optional Hardening

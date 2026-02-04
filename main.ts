@@ -1,4 +1,4 @@
-import { Plugin } from 'obsidian';
+import { Plugin, TFile } from 'obsidian';
 import { TaskScannerService } from './src/services/TaskScannerService';
 import { DailyNoteService } from './src/services/DailyNoteService';
 import { ReverseSyncService } from './src/services/ReverseSyncService';
@@ -27,12 +27,13 @@ export default class TaskSyncPlugin extends Plugin {
         this.reverseSyncService = new ReverseSyncService(this.app, this.dailyNoteService);
         this.sourceToDailyService = new SourceToDailySyncService(this.app, this.dailyNoteService);
 
-        // Set up file watcher
+        // Set up file watcher (passes changed file for incremental scanning)
         this.fileWatcher = new FileWatcherService(
             this.app,
             this.settings,
-            () => this.syncPriorityTasks(),
-            () => this.dailyNoteService.getTodaysDailyNotePath()
+            (file?: TFile) => this.syncPriorityTasks(file),
+            () => this.dailyNoteService.getTodaysDailyNotePath(),
+            (file: TFile) => this.taskScanner.isExcluded(file)
         );
 
         // Start services after Obsidian workspace is fully ready
@@ -98,8 +99,9 @@ export default class TaskSyncPlugin extends Plugin {
 
     /**
      * Main sync operation: Vault → Daily Note
+     * @param file Optional file for incremental scanning (single file changed)
      */
-    private async syncPriorityTasks(): Promise<void> {
+    private async syncPriorityTasks(file?: TFile): Promise<void> {
         if (!this.settings.enabled) return;
 
         const dailyNote = await this.dailyNoteService.getTodaysDailyNote();
@@ -107,14 +109,15 @@ export default class TaskSyncPlugin extends Plugin {
             return;
         }
 
-        // Scan vault (uses cache optimization)
-        const allTasks = await this.taskScanner.scanVault();
+        // Scan vault or single file (incremental scanning)
+        const allTasks = await this.taskScanner.scanVault(file);
 
         // Filter by priority settings
         const filteredTasks = this.filterByPriority(allTasks);
 
-        // Apply task limit
-        const limitedTasks = this.settings.taskLimit > 0
+        // Apply task limit ONLY for full vault scans
+        // For incremental scans, pass all tasks - the limit shouldn't cut off new tasks
+        const limitedTasks = (!file && this.settings.taskLimit > 0)
             ? filteredTasks.slice(0, this.settings.taskLimit)
             : filteredTasks;
 
