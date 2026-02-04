@@ -24,13 +24,17 @@ export class DailyNoteService {
             const todayNote = getDailyNote(window.moment(), dailyNotes);
 
             if (!todayNote) {
-                console.debug('[TaskSync] No daily note found for today');
+                if (this.settings.enableDebugLogging) {
+                    console.debug('[TaskSync] No daily note found for today');
+                }
                 return null;
             }
 
             return todayNote;
         } catch (error) {
-            console.warn('[TaskSync] Could not access daily notes. Is the Daily Notes core plugin enabled?', error);
+            if (this.settings.enableDebugLogging) {
+                console.warn('[TaskSync] Could not access daily notes. Is the Daily Notes core plugin enabled?', error);
+            }
             return null;
         }
     }
@@ -63,48 +67,59 @@ export class DailyNoteService {
             console.log(`[TaskSync] appendNewTasks called with ${tasks.length} tasks`);
         }
 
-        const content = await this.app.vault.read(dailyNote);
+        try {
+            const content = await this.app.vault.read(dailyNote);
 
-        // Find where to insert
-        const insertPoint = this.findSectionInsertPoint(content);
-        if (insertPoint === null) {
-            console.debug(`[TaskSync] Section header "${this.settings.sectionHeader}" not found in daily note`);
+            // Find where to insert
+            const insertPoint = this.findSectionInsertPoint(content);
+            if (insertPoint === null) {
+                if (this.settings.enableDebugLogging) {
+                    console.debug(`[TaskSync] Section header "${this.settings.sectionHeader}" not found in daily note`);
+                }
+                return 0;
+            }
+
+            // Get existing synced tasks for deduplication
+            // Include ALL tasks (completed and uncompleted) to prevent race condition duplicates
+            const existingTasks = await this.readExistingTasks(dailyNote);
+            const existingCleanTexts = new Set(
+                existingTasks.map(t => t.cleanText)
+            );
+            if (this.settings.enableDebugLogging) {
+                console.log(`[TaskSync] Found ${existingTasks.length} existing tasks for deduplication`);
+            }
+
+            // Filter to only new tasks
+            const newTasks = tasks.filter(t => !existingCleanTexts.has(t.cleanText));
+            if (this.settings.enableDebugLogging) {
+                console.log(`[TaskSync] After deduplication: ${newTasks.length} new tasks to add`);
+            }
+
+            if (newTasks.length === 0) {
+                if (this.settings.enableDebugLogging) {
+                    console.debug('[TaskSync] No new tasks to sync');
+                }
+                return 0;
+            }
+
+            // Format tasks for insertion
+            const formattedTasks = newTasks.map(t => this.formatTask(t, dailyNote));
+            const taskBlock = formattedTasks.join('\n') + '\n';
+
+            // Insert at the found position
+            const newContent = content.slice(0, insertPoint) + taskBlock + content.slice(insertPoint);
+            await this.app.vault.modify(dailyNote, newContent);
+
+            if (this.settings.enableDebugLogging) {
+                console.debug(`[TaskSync] Appended ${newTasks.length} new tasks`);
+            }
+            return newTasks.length;
+        } catch (error) {
+            if (this.settings.enableDebugLogging) {
+                console.warn(`[TaskSync] Failed to append tasks to daily note:`, error);
+            }
             return 0;
         }
-
-        // Get existing synced tasks for deduplication
-        // Only consider UNCOMPLETED tasks - completed tasks should not block new syncs
-        const existingTasks = await this.readExistingTasks(dailyNote);
-        const existingCleanTexts = new Set(
-            existingTasks.filter(t => !t.completed).map(t => t.cleanText)
-        );
-        if (this.settings.enableDebugLogging) {
-            console.log(`[TaskSync] Found ${existingTasks.length} existing tasks (${existingCleanTexts.size} uncompleted)`);
-        }
-
-        // Filter to only new tasks
-        const newTasks = tasks.filter(t => !existingCleanTexts.has(t.cleanText));
-        if (this.settings.enableDebugLogging) {
-            console.log(`[TaskSync] After deduplication: ${newTasks.length} new tasks to add`);
-        }
-
-        if (newTasks.length === 0) {
-            console.debug('[TaskSync] No new tasks to sync');
-            return 0;
-        }
-
-        // Format tasks for insertion
-        const formattedTasks = newTasks.map(t => this.formatTask(t, dailyNote));
-        const taskBlock = formattedTasks.join('\n') + '\n';
-
-        // Insert at the found position
-        const newContent = content.slice(0, insertPoint) + taskBlock + content.slice(insertPoint);
-        await this.app.vault.modify(dailyNote, newContent);
-
-        if (this.settings.enableDebugLogging) {
-            console.debug(`[TaskSync] Appended ${newTasks.length} new tasks`);
-        }
-        return newTasks.length;
     }
 
     /**
@@ -112,42 +127,49 @@ export class DailyNoteService {
      * Used for deduplication.
      */
     async readExistingTasks(dailyNote: TFile): Promise<SyncedTask[]> {
-        const content = await this.app.vault.read(dailyNote);
-        const lines = content.split('\n');
-        const tasks: SyncedTask[] = [];
+        try {
+            const content = await this.app.vault.read(dailyNote);
+            const lines = content.split('\n');
+            const tasks: SyncedTask[] = [];
 
-        // Find the section
-        const sectionIndex = lines.findIndex(line =>
-            line.trim() === this.settings.sectionHeader.trim()
-        );
+            // Find the section
+            const sectionIndex = lines.findIndex(line =>
+                line.trim() === this.settings.sectionHeader.trim()
+            );
 
-        if (sectionIndex === -1) {
+            if (sectionIndex === -1) {
+                return tasks;
+            }
+
+            // Parse tasks in section until next header or end of file
+            for (let i = sectionIndex + 1; i < lines.length; i++) {
+                const line = lines[i];
+
+                // Stop at next header
+                if (line.trim().startsWith('#')) {
+                    break;
+                }
+
+                // Check if this is a checkbox line
+                const checkboxMatch = line.match(CHECKBOX_REGEX);
+                if (checkboxMatch) {
+                    const completed = checkboxMatch[2].toLowerCase() === 'x';
+                    tasks.push({
+                        cleanText: TaskParser.cleanTaskText(line),
+                        line,
+                        completed,
+                        lineNumber: i,
+                    });
+                }
+            }
+
             return tasks;
-        }
-
-        // Parse tasks in section until next header or end of file
-        for (let i = sectionIndex + 1; i < lines.length; i++) {
-            const line = lines[i];
-
-            // Stop at next header
-            if (line.trim().startsWith('#')) {
-                break;
+        } catch (error) {
+            if (this.settings.enableDebugLogging) {
+                console.warn(`[TaskSync] Failed to read existing tasks from daily note:`, error);
             }
-
-            // Check if this is a checkbox line
-            const checkboxMatch = line.match(CHECKBOX_REGEX);
-            if (checkboxMatch) {
-                const completed = checkboxMatch[2].toLowerCase() === 'x';
-                tasks.push({
-                    cleanText: TaskParser.cleanTaskText(line),
-                    line,
-                    completed,
-                    lineNumber: i,
-                });
-            }
+            return [];
         }
-
-        return tasks;
     }
 
     /**

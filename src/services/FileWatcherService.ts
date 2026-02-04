@@ -29,7 +29,9 @@ export class FileWatcherService {
             }
         });
 
-        console.debug('[TaskSync] FileWatcher started');
+        if (this.settings.enableDebugLogging) {
+            console.debug('[TaskSync] FileWatcher started');
+        }
     }
 
     /**
@@ -46,7 +48,9 @@ export class FileWatcherService {
         }
         this.pendingFile = null;
 
-        console.debug('[TaskSync] FileWatcher stopped');
+        if (this.settings.enableDebugLogging) {
+            console.debug('[TaskSync] FileWatcher stopped');
+        }
     }
 
     /**
@@ -80,10 +84,14 @@ export class FileWatcherService {
             this.pendingFile = null;
             try {
                 // Pass the specific file for incremental scan, or undefined for full scan
-                console.log(`[TaskSync] Triggering sync - incremental: ${fileToSync?.path ?? 'FULL SCAN'}`);
+                if (this.settings.enableDebugLogging) {
+                    console.log(`[TaskSync] Triggering sync - incremental: ${fileToSync?.path ?? 'FULL SCAN'}`);
+                }
                 await this.onSync(fileToSync ?? undefined);
             } catch (error) {
-                console.error('[TaskSync] Sync failed:', error);
+                if (this.settings.enableDebugLogging) {
+                    console.error('[TaskSync] Sync failed:', error);
+                }
             }
         }, this.settings.debounceMs);
     }

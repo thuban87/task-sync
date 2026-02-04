@@ -291,18 +291,29 @@ stopServices(): void {
 
 ---
 
-## Phase 4: Optional Hardening
+## Phase 4: Optional Hardening ✅
 
 **Goal:** TypeScript strictness, regex fixes, user feedback, error handling.
 
 ### Tasks
 
-- [ ] Enable `"strict": true` in tsconfig.json
-- [ ] Fix any resulting TypeScript errors
-- [ ] Fix regex global flag usage (create fresh instances or remove /g)
-- [ ] Add simple sync status notice ("Synced X tasks")
-- [ ] Add try/catch to file read/write operations
-- [ ] Test error scenarios (delete file during sync, etc.)
+- [x] Enable `"strict": true` in tsconfig.json (already enabled)
+- [x] Fix any resulting TypeScript errors (none needed)
+- [x] Fix regex global flag usage (removed /g from PRIORITY_REGEX and WIKILINK_REGEX)
+- [x] Add simple sync status notice ("Task Sync: Added X task(s)")
+- [x] Add try/catch to file read/write operations (12 total across 4 services)
+- [x] Gate all debug/warn logs behind enableDebugLogging setting
+- [x] Test error scenarios
+
+### Bug Fixed (2026-02-03)
+
+**Task duplication on checkbox toggle** - When checking a task in the daily note, race condition caused duplicates:
+1. Task checked → removed from dedup set (only uncompleted tasks tracked)
+2. Reverse sync updated source file
+3. File watcher triggered before debounce
+4. Checked task not in dedup set → source task re-added
+
+**Fix:** Changed deduplication to include ALL tasks (completed + uncompleted).
 
 ### Files to Modify
 
@@ -432,4 +443,4 @@ Mark phases complete here as work progresses:
 - [x] Phase 1: Foundation Refactoring
 - [x] Phase 2: Incremental Scanning
 - [x] Phase 3: Polish & Cleanup
-- [ ] Phase 4: Optional Hardening
+- [x] Phase 4: Optional Hardening

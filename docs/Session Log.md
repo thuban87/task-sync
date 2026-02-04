@@ -225,25 +225,70 @@ task-sync/
 
 ---
 
-## Next Session Prompt
+## 2026-02-03 - Polish Phase 4: Optional Hardening
 
-```
-Continue work on Task Sync plugin polish.
+**Focus:** TypeScript strictness, error handling, sync status feedback
 
-Focus: Phase 4 - Optional Hardening
-- Enable TypeScript strict mode
-- Fix regex global flag issues
-- Add sync status notice
-- Add error handling to file operations
+### Completed:
 
-Reference: docs/Polish Implementation Roadmap.md
-```
+- ✅ Verified TypeScript strict mode was already enabled in `tsconfig.json`
+- ✅ Removed `/g` global flags from unused regex constants (`PRIORITY_REGEX`, `WIKILINK_REGEX`)
+- ✅ Added try/catch error handling to all file operations (12 total):
+  - `DailyNoteService.ts` - 2 reads, 1 modify
+  - `TaskScannerService.ts` - 1 read
+  - `ReverseSyncService.ts` - 3 reads, 1 modify
+  - `SourceToDailySyncService.ts` - 3 reads, 1 modify
+- ✅ Added sync status Notice toast ("Task Sync: Added N task(s)")
+- ✅ Gated all debug/warn console logs behind `enableDebugLogging` setting
+- ✅ Added `PluginSettings` to `SourceToDailySyncService` constructor
+
+### Bug Fixed:
+
+**Task duplication on checkbox toggle** - When checking a task in the daily note, duplicates would appear due to a race condition:
+1. Task checked → removed from deduplication set (only uncompleted tasks were tracked)
+2. Reverse sync updated source file
+3. File watcher triggered sync before debounce
+4. Since checked task wasn't in dedup set, source task was re-added
+
+**Fix:** Changed deduplication to include ALL tasks (completed + uncompleted), not just uncompleted.
+
+### Files Changed:
+
+**Modified:**
+- `src/constants.ts` - Removed `/g` flags from `PRIORITY_REGEX` and `WIKILINK_REGEX`
+- `src/services/DailyNoteService.ts` - Try/catch, debug log gating, fixed deduplication
+- `src/services/TaskScannerService.ts` - Try/catch, debug log gating
+- `src/services/ReverseSyncService.ts` - Try/catch, debug log gating
+- `src/services/SourceToDailySyncService.ts` - Try/catch, debug log gating, added settings param
+- `main.ts` - Added `Notice` import, sync status toast, debug log gating
+
+### Testing Notes:
+
+- ✅ Build passes (`npm run build`)
+- ✅ TypeScript strict mode in effect (was already enabled)
+- ✅ Error handling gracefully catches file operation failures
+- ✅ Task checkbox toggle in daily note works without duplication
+- ✅ Reverse sync updates source file correctly
+- ✅ No console spam when debug logging disabled
+
+---
+
+## All Phases Complete! ✅
+
+The Task Sync plugin polish work is complete. All 4 phases have been implemented:
+
+| Phase | Focus | Status |
+|-------|-------|--------|
+| 1 | Foundation Refactoring | ✅ Complete |
+| 2 | Incremental Scanning | ✅ Complete |
+| 3 | Polish & Cleanup | ✅ Complete |
+| 4 | Optional Hardening | ✅ Complete |
 
 ---
 
 ## Git Commit Messages
 
-### Phase 1 (previous):
+### Phase 1:
 ```
 refactor: centralize task parsing + improve matching logic
 
@@ -257,7 +302,7 @@ refactor: centralize task parsing + improve matching logic
 Files changed: TaskParser.ts (new), 4 services refactored, settings.ts
 ```
 
-### Phase 2 (previous):
+### Phase 2:
 ```
 perf: implement incremental scanning for file changes
 
@@ -271,7 +316,7 @@ Performance: file edits now scan 1 file instead of entire vault
 Files changed: TaskScannerService, FileWatcherService, main.ts
 ```
 
-### Phase 3 (current):
+### Phase 3:
 ```
 chore: add debug logging toggle and cleanup memory leaks
 
@@ -282,4 +327,18 @@ chore: add debug logging toggle and cleanup memory leaks
 - Fix event listener cleanup in stopServices()
 
 Files changed: settings.ts, main.ts, DailyNoteService.ts, ReverseSyncService.ts
+```
+
+### Phase 4 (current):
+```
+chore: add error handling, sync notice, fix task duplication bug
+
+- Remove /g global flags from unused regex constants
+- Add try/catch to all file operations (12 total across 4 services)
+- Gate all debug/warn logs behind enableDebugLogging setting
+- Add sync status Notice toast when tasks are added
+- Fix task duplication on checkbox toggle (include completed tasks in dedup)
+
+Files changed: constants.ts, main.ts, DailyNoteService.ts, 
+TaskScannerService.ts, ReverseSyncService.ts, SourceToDailySyncService.ts
 ```

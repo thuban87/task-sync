@@ -61,13 +61,17 @@ export class TaskScannerService {
      */
     async scanFile(file: TFile): Promise<PriorityTask[]> {
         if (this.isExcluded(file)) {
-            console.log(`[TaskSync] scanFile: ${file.path} is excluded, skipping`);
+            if (this.settings.enableDebugLogging) {
+                console.log(`[TaskSync] scanFile: ${file.path} is excluded, skipping`);
+            }
             return [];
         }
         // NOTE: Don't check hasListItems() here - cache may be stale after file modification
         // The parseFile call is cheap enough for a single file
         const tasks = await this.parseFile(file);
-        console.log(`[TaskSync] scanFile: ${file.path} found ${tasks.length} priority tasks`);
+        if (this.settings.enableDebugLogging) {
+            console.log(`[TaskSync] scanFile: ${file.path} found ${tasks.length} priority tasks`);
+        }
         return tasks;
     }
 
@@ -117,33 +121,40 @@ export class TaskScannerService {
      * Only called if hasListItems() returns true.
      */
     private async parseFile(file: TFile): Promise<PriorityTask[]> {
-        const tasks: PriorityTask[] = [];
-        const content = await this.app.vault.read(file);
-        const lines = content.split('\n');
+        try {
+            const tasks: PriorityTask[] = [];
+            const content = await this.app.vault.read(file);
+            const lines = content.split('\n');
 
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
 
-            // Skip if not an uncompleted checkbox
-            if (!TaskParser.isUncompleted(line)) {
-                continue;
+                // Skip if not an uncompleted checkbox
+                if (!TaskParser.isUncompleted(line)) {
+                    continue;
+                }
+
+                // Check for priority marker
+                const priority = TaskParser.extractPriority(line);
+                if (!priority) {
+                    continue;
+                }
+
+                tasks.push({
+                    originalLine: line,
+                    cleanText: TaskParser.cleanTaskText(line),
+                    filePath: file.path,
+                    lineNumber: i,
+                    priority,
+                });
             }
 
-            // Check for priority marker
-            const priority = TaskParser.extractPriority(line);
-            if (!priority) {
-                continue;
+            return tasks;
+        } catch (error) {
+            if (this.settings.enableDebugLogging) {
+                console.warn(`[TaskSync] Failed to parse file ${file.path}:`, error);
             }
-
-            tasks.push({
-                originalLine: line,
-                cleanText: TaskParser.cleanTaskText(line),
-                filePath: file.path,
-                lineNumber: i,
-                priority,
-            });
+            return [];
         }
-
-        return tasks;
     }
 }

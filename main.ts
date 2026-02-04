@@ -1,4 +1,4 @@
-import { Plugin, TFile } from 'obsidian';
+import { Notice, Plugin, TFile } from 'obsidian';
 import { TaskScannerService } from './src/services/TaskScannerService';
 import { DailyNoteService } from './src/services/DailyNoteService';
 import { ReverseSyncService } from './src/services/ReverseSyncService';
@@ -18,15 +18,17 @@ export default class TaskSyncPlugin extends Plugin {
     private createEventRef: import('obsidian').EventRef | null = null;
 
     async onload(): Promise<void> {
-        console.log('[TaskSync] Loading plugin');
-
         await this.loadSettings();
+
+        if (this.settings.enableDebugLogging) {
+            console.log('[TaskSync] Loading plugin');
+        }
 
         // Initialize services
         this.taskScanner = new TaskScannerService(this.app, this.settings);
         this.dailyNoteService = new DailyNoteService(this.app, this.settings);
         this.reverseSyncService = new ReverseSyncService(this.app, this.dailyNoteService, this.settings);
-        this.sourceToDailyService = new SourceToDailySyncService(this.app, this.dailyNoteService);
+        this.sourceToDailyService = new SourceToDailySyncService(this.app, this.dailyNoteService, this.settings);
 
         // Set up file watcher (passes changed file for incremental scanning)
         this.fileWatcher = new FileWatcherService(
@@ -61,7 +63,9 @@ export default class TaskSyncPlugin extends Plugin {
 
     async onunload(): Promise<void> {
         this.stopServices();
-        console.log('[TaskSync] Plugin unloaded');
+        if (this.settings.enableDebugLogging) {
+            console.log('[TaskSync] Plugin unloaded');
+        }
     }
 
     /**
@@ -128,7 +132,10 @@ export default class TaskSyncPlugin extends Plugin {
             : filteredTasks;
 
         // Append new tasks (deduplication handled inside)
-        await this.dailyNoteService.appendNewTasks(dailyNote, limitedTasks);
+        const count = await this.dailyNoteService.appendNewTasks(dailyNote, limitedTasks);
+        if (count > 0) {
+            new Notice(`Task Sync: Added ${count} task${count > 1 ? 's' : ''}`);
+        }
     }
 
     /**

@@ -9,7 +9,7 @@ export const PRIORITY_MARKERS = {
 /**
  * Regex to match priority markers
  */
-export const PRIORITY_REGEX = /[⏫🔺]/g;
+export const PRIORITY_REGEX = /[⏫🔺]/;
 
 /**
  * Regex to match markdown checkbox (captures indent, checkbox state)
@@ -22,7 +22,7 @@ export const CHECKBOX_REGEX = /^(\s*)-\s*\[([ xX])\]/;
  * Regex to match wikilink (captures link target)
  * Group 1: link target (without brackets)
  */
-export const WIKILINK_REGEX = /\[\[([^\]]+)\]\]/g;
+export const WIKILINK_REGEX = /\[\[([^\]]+)\]\]/;
 
 /**
  * Regex to match uncompleted checkbox
