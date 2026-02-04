@@ -1,12 +1,7 @@
 import { App, TFile } from 'obsidian';
 import { PriorityTask } from '../models/PriorityTask';
 import { PluginSettings } from '../settings';
-import {
-    PRIORITY_MARKERS,
-    PRIORITY_REGEX,
-    UNCOMPLETED_CHECKBOX_REGEX,
-    WIKILINK_REGEX,
-} from '../constants';
+import { TaskParser } from '../utils/TaskParser';
 
 /**
  * Service for scanning the vault for high-priority tasks.
@@ -53,7 +48,7 @@ export class TaskScannerService {
     /**
      * Check if file is excluded by settings.
      */
-    private isExcluded(file: TFile): boolean {
+    isExcluded(file: TFile): boolean {
         // Check excluded folders
         for (const folder of this.settings.excludedFolders) {
             if (folder && file.path.startsWith(folder + '/')) {
@@ -104,19 +99,19 @@ export class TaskScannerService {
             const line = lines[i];
 
             // Skip if not an uncompleted checkbox
-            if (!this.isUncompleted(line)) {
+            if (!TaskParser.isUncompleted(line)) {
                 continue;
             }
 
             // Check for priority marker
-            const priority = this.extractPriority(line);
+            const priority = TaskParser.extractPriority(line);
             if (!priority) {
                 continue;
             }
 
             tasks.push({
                 originalLine: line,
-                cleanText: this.cleanTaskText(line),
+                cleanText: TaskParser.cleanTaskText(line),
                 filePath: file.path,
                 lineNumber: i,
                 priority,
@@ -124,58 +119,5 @@ export class TaskScannerService {
         }
 
         return tasks;
-    }
-
-    /**
-     * Extract priority level from task line.
-     * @returns 'highest' (⏫), 'high' (🔺), or null
-     */
-    private extractPriority(line: string): 'highest' | 'high' | null {
-        if (line.includes(PRIORITY_MARKERS.highest)) {
-            return 'highest';
-        }
-        if (line.includes(PRIORITY_MARKERS.high)) {
-            return 'high';
-        }
-        return null;
-    }
-
-    /**
-     * Clean task text for deduplication.
-     * Strips: checkbox, priority emoji, wikilinks, Tasks plugin metadata, extra whitespace.
-     */
-    private cleanTaskText(line: string): string {
-        let cleaned = line;
-
-        // Remove checkbox prefix (- [ ] or - [x])
-        cleaned = cleaned.replace(/^\s*-\s*\[[ xX]\]\s*/, '');
-
-        // Remove priority emojis (⏫ 🔺 🔼 🔽 ⏬)
-        cleaned = cleaned.replace(PRIORITY_REGEX, '');
-
-        // Remove Tasks plugin metadata:
-        // ✅ Done date, 📅 Due date, ⏳ Scheduled, 🛫 Start, 🔁 Recurrence, ➕ Created
-        cleaned = cleaned.replace(/[✅📅⏳🛫🔁➕]\s*\d{4}-\d{2}-\d{2}/g, '');
-
-        // Remove standalone completion emoji (sometimes without date)
-        cleaned = cleaned.replace(/✅/g, '');
-
-        // Remove wikilinks entirely (for consistent matching)
-        cleaned = cleaned.replace(/\[\[[^\]]+\]\]/g, '');
-
-        // Remove markdown links entirely [text](url)
-        cleaned = cleaned.replace(/\[[^\]]+\]\([^)]+\)/g, '');
-
-        // Normalize whitespace
-        cleaned = cleaned.replace(/\s+/g, ' ').trim();
-
-        return cleaned;
-    }
-
-    /**
-     * Check if task line is uncompleted.
-     */
-    private isUncompleted(line: string): boolean {
-        return UNCOMPLETED_CHECKBOX_REGEX.test(line);
     }
 }

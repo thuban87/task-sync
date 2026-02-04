@@ -1,6 +1,7 @@
 import { App, TFile, EventRef } from 'obsidian';
 import { DailyNoteService } from './DailyNoteService';
-import { PRIORITY_REGEX, CHECKBOX_REGEX } from '../constants';
+import { TaskParser } from '../utils/TaskParser';
+import { CHECKBOX_REGEX } from '../constants';
 
 /**
  * Service for syncing task completion from source files to daily note.
@@ -11,7 +12,7 @@ export class SourceToDailySyncService {
     private dailyNotePath: string | null = null;
     private isProcessing = false;
 
-    // Cache of synced tasks: maps cleanText -> { sourcePath, lineInDaily }
+    // Cache of synced tasks: maps cleanText -> { sourcePath, checked }
     private syncedTasksCache: Map<string, { sourcePath: string; checked: boolean }> = new Map();
 
     constructor(
@@ -62,19 +63,15 @@ export class SourceToDailySyncService {
 
         for (const line of lines) {
             // Match checkboxes
-            const isCheckbox = CHECKBOX_REGEX.test(line);
-            if (!isCheckbox) continue;
+            if (!TaskParser.isCheckbox(line)) continue;
 
             // Extract source path from wikilink
-            const wikilinkMatch = line.match(/\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/);
-            if (!wikilinkMatch) continue;
-
-            const sourcePath = this.resolveSourcePath(wikilinkMatch[1]);
+            const sourcePath = TaskParser.extractSourcePath(line, this.app);
             if (!sourcePath) continue;
 
             // Get clean text for matching
-            const cleanText = this.cleanTaskText(line);
-            const isChecked = /^\s*-\s*\[x\]/i.test(line);
+            const cleanText = TaskParser.cleanTaskText(line);
+            const isChecked = TaskParser.isCompleted(line);
 
             this.syncedTasksCache.set(cleanText, {
                 sourcePath,
@@ -104,12 +101,12 @@ export class SourceToDailySyncService {
         for (const [cleanText, info] of tasksInFile) {
             // Find this task in the source file
             for (const line of lines) {
-                if (!CHECKBOX_REGEX.test(line)) continue;
-                if (!PRIORITY_REGEX.test(line)) continue;
+                if (!TaskParser.isCheckbox(line)) continue;
+                if (!TaskParser.extractPriority(line)) continue;
 
-                const lineClean = this.cleanTaskText(line);
+                const lineClean = TaskParser.cleanTaskText(line);
                 if (lineClean === cleanText) {
-                    const isNowChecked = /^\s*-\s*\[x\]/i.test(line);
+                    const isNowChecked = TaskParser.isCompleted(line);
                     if (isNowChecked !== info.checked) {
                         changes.push({ cleanText, nowChecked: isNowChecked });
                     }
@@ -151,9 +148,9 @@ export class SourceToDailySyncService {
 
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            if (!CHECKBOX_REGEX.test(line)) continue;
+            if (!TaskParser.isCheckbox(line)) continue;
 
-            const lineClean = this.cleanTaskText(line);
+            const lineClean = TaskParser.cleanTaskText(line);
             if (lineClean === cleanText) {
                 // Update the checkbox
                 const oldLine = line;
@@ -174,45 +171,5 @@ export class SourceToDailySyncService {
         if (modified) {
             await this.app.vault.modify(dailyNote, lines.join('\n'));
         }
-    }
-
-    /**
-     * Resolve a wikilink to a full file path.
-     */
-    private resolveSourcePath(linkText: string): string | null {
-        // Handle display text: [[path|display]] -> path
-        const path = linkText.split('|')[0];
-
-        // Try to find the file
-        const file = this.app.metadataCache.getFirstLinkpathDest(path, '');
-        return file?.path ?? null;
-    }
-
-    /**
-     * Clean task text for matching.
-     */
-    private cleanTaskText(line: string): string {
-        let cleaned = line;
-
-        // Remove checkbox prefix
-        cleaned = cleaned.replace(/^\s*-\s*\[[ xX]\]\s*/, '');
-
-        // Remove priority emojis
-        cleaned = cleaned.replace(PRIORITY_REGEX, '');
-
-        // Remove Tasks plugin metadata
-        cleaned = cleaned.replace(/[✅📅⏳🛫🔁➕]\s*\d{4}-\d{2}-\d{2}/g, '');
-        cleaned = cleaned.replace(/✅/g, '');
-
-        // Remove wikilinks entirely
-        cleaned = cleaned.replace(/\[\[[^\]]+\]\]/g, '');
-
-        // Remove markdown links
-        cleaned = cleaned.replace(/\[[^\]]+\]\([^)]+\)/g, '');
-
-        // Normalize whitespace
-        cleaned = cleaned.replace(/\s+/g, ' ').trim();
-
-        return cleaned;
     }
 }

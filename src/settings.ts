@@ -43,7 +43,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
     enabled: true,
     sectionHeader: '## ⚡ High Priority Tasks',
     taskLimit: 5,
-    debounceMs: 2000,
+    debounceMs: 3500,
     includeHighest: true,
     includeHigh: true,
     enableReverseSync: true,
@@ -117,7 +117,7 @@ export class TaskSyncSettingTab extends PluginSettingTab {
             .setName('Debounce delay')
             .setDesc('How long to wait after file changes before syncing (in milliseconds)')
             .addSlider(slider => slider
-                .setLimits(500, 5000, 100)
+                .setLimits(500, 10000, 100)
                 .setValue(this.plugin.settings.debounceMs)
                 .setDynamicTooltip()
                 .onChange(async (value) => {

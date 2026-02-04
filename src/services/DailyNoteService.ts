@@ -2,11 +2,8 @@ import { App, TFile } from 'obsidian';
 import { getDailyNote, getAllDailyNotes } from 'obsidian-daily-notes-interface';
 import { PriorityTask, SyncedTask } from '../models/PriorityTask';
 import { PluginSettings } from '../settings';
-import {
-    PRIORITY_MARKERS,
-    PRIORITY_REGEX,
-    CHECKBOX_REGEX,
-} from '../constants';
+import { PRIORITY_MARKERS, CHECKBOX_REGEX } from '../constants';
+import { TaskParser } from '../utils/TaskParser';
 
 /**
  * Service for reading from and appending to the daily note.
@@ -129,7 +126,7 @@ export class DailyNoteService {
             if (checkboxMatch) {
                 const completed = checkboxMatch[2].toLowerCase() === 'x';
                 tasks.push({
-                    cleanText: this.cleanTaskText(line),
+                    cleanText: TaskParser.cleanTaskText(line),
                     line,
                     completed,
                     lineNumber: i,
@@ -194,37 +191,5 @@ export class DailyNoteService {
             : PRIORITY_MARKERS.high;
 
         return `- [ ] ${task.cleanText} ${priorityEmoji} ${link}`;
-    }
-
-    /**
-     * Clean task text for deduplication matching.
-     * Strips all metadata added by Tasks plugin and this plugin.
-     */
-    private cleanTaskText(line: string): string {
-        let cleaned = line;
-
-        // Remove checkbox prefix
-        cleaned = cleaned.replace(/^\s*-\s*\[[ xX]\]\s*/, '');
-
-        // Remove priority emojis (⏫ 🔺 🔼 🔽 ⏬)
-        cleaned = cleaned.replace(PRIORITY_REGEX, '');
-
-        // Remove Tasks plugin metadata:
-        // ✅ Done date, 📅 Due date, ⏳ Scheduled, 🛫 Start, 🔁 Recurrence, ➕ Created
-        cleaned = cleaned.replace(/[✅📅⏳🛫🔁➕]\s*\d{4}-\d{2}-\d{2}/g, '');
-
-        // Remove standalone completion emoji (sometimes without date)
-        cleaned = cleaned.replace(/✅/g, '');
-
-        // Remove wikilinks entirely (these are source file refs we added)
-        cleaned = cleaned.replace(/\[\[[^\]]+\]\]/g, '');
-
-        // Remove markdown links entirely [text](url)
-        cleaned = cleaned.replace(/\[[^\]]+\]\([^)]+\)/g, '');
-
-        // Normalize whitespace
-        cleaned = cleaned.replace(/\s+/g, ' ').trim();
-
-        return cleaned;
     }
 }

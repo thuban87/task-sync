@@ -117,23 +117,58 @@ task-sync/
 
 ---
 
+## 2026-02-03 - Polish Phase 1: Foundation Refactoring
+
+**Focus:** Code centralization and improved task matching
+
+### Completed:
+
+- ✅ Created `src/utils/TaskParser.ts` - centralized shared logic
+- ✅ Refactored `TaskScannerService.ts` to use TaskParser
+- ✅ Refactored `DailyNoteService.ts` to use TaskParser
+- ✅ Refactored `ReverseSyncService.ts` to use TaskParser
+- ✅ Refactored `SourceToDailySyncService.ts` to use TaskParser
+- ✅ Implemented multi-signal task matching (cleanText + priority + lineNumber)
+- ✅ Increased default debounce from 2000ms → 3500ms
+- ✅ Increased max debounce slider from 5000ms → 10000ms
+
+### Files Changed:
+
+**Created:**
+- `src/utils/TaskParser.ts` - Shared cleaning, parsing, matching logic
+
+**Modified:**
+- `src/services/TaskScannerService.ts` - Uses TaskParser
+- `src/services/DailyNoteService.ts` - Uses TaskParser
+- `src/services/ReverseSyncService.ts` - Uses TaskParser + multi-signal matching
+- `src/services/SourceToDailySyncService.ts` - Uses TaskParser
+- `src/settings.ts` - Debounce defaults updated
+
+### Code Improvements:
+
+- Removed ~200 lines of duplicated `cleanTaskText()` code
+- Task matching now uses 3 signals instead of line number only
+- Sync is more resilient to line insertions/deletions
+
+### Testing Notes:
+
+- ✅ Build passes
+- ✅ Two-way sync still working
+- ✅ Debounce prevents sync during active typing
+
+---
+
 ## Next Session Prompt
 
 ```
-Task Sync plugin is complete and deployed to production.
+Continue work on Task Sync plugin polish.
 
-Features implemented:
-- Two-way task sync (Daily ↔ Source)
-- Priority task scanning (⏫ ⏫) 
-- File/folder/filename exclusions
-- Auto-sync on daily note creation
-- Manual sync command
+Focus: Phase 2 - Incremental Scanning
+- Modify TaskScannerService to support single-file scanning
+- Update FileWatcherService to pass changed file and check exclusions
+- Goal: Only scan files that actually changed
 
-Future enhancements to consider:
-- Task sorting options (by priority, by file)
-- Sync status indicator in status bar
-- Support for additional priority levels
-- Configurable sync section per-file
+Reference: docs/Polish Implementation Roadmap.md
 ```
 
 ---
@@ -141,31 +176,14 @@ Future enhancements to consider:
 ## Git Commit Message
 
 ```
-feat: Task Sync plugin - initial release
+refactor: centralize task parsing + improve matching logic
 
-Two-Way Task Sync:
-- Priority tasks (⏫ 🔺) auto-sync to daily note section
-- Daily note checkbox changes propagate to source files
-- Source file changes sync back to daily note
-- Auto-sync when daily note is created
+- Create src/utils/TaskParser.ts with shared cleaning/parsing/matching
+- Refactor all 4 services to use TaskParser (removes ~200 lines duplication)
+- Replace line-number-only matching with multi-signal approach
+  (cleanText + priority + lineNumber, 2+ signals = match)
+- Increase default debounce 2000ms → 3500ms
+- Increase max debounce slider 5000ms → 10000ms
 
-Exclusion Settings:
-- Exclude folders (with path autocomplete)
-- Exclude files (with path autocomplete)  
-- Exclude file names (matches across all directories)
-
-Features:
-- Priority filters (highest/high toggles)
-- Task limit setting
-- Debounce delay configuration
-- Manual sync command
-
-Architecture:
-- TaskScannerService: Vault scanning with metadataCache optimization
-- DailyNoteService: Periodic Notes/Daily Notes plugin compatibility
-- FileWatcherService: Debounced file watching
-- ReverseSyncService: Daily → Source sync
-- SourceToDailySyncService: Source → Daily sync
-
-Files: main.ts, settings.ts, and 6 service files
+Files changed: TaskParser.ts (new), 4 services refactored, settings.ts
 ```
