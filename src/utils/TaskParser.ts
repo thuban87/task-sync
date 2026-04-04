@@ -4,6 +4,7 @@ import {
     CHECKBOX_REGEX,
     UNCOMPLETED_CHECKBOX_REGEX,
     COMPLETED_CHECKBOX_REGEX,
+    TAG_REGEX,
 } from '../constants';
 
 /**
@@ -12,8 +13,8 @@ import {
 export interface TaskState {
     /** Line number in file (0-indexed) */
     lineNumber: number;
-    /** Clean text for matching */
-    cleanText: string;
+    /** Display text for matching */
+    displayText: string;
     /** Priority level */
     priority: 'highest' | 'high' | null;
     /** Whether checkbox is checked */
@@ -43,10 +44,13 @@ export interface TaskMatch {
 export class TaskParser {
     /**
      * Clean task text for deduplication/matching.
-     * Strips: checkbox, priority emoji, wikilinks, markdown links, Tasks plugin metadata.
+     * Strips: callout prefix, checkbox, priority emoji, wikilinks, markdown links, Tasks plugin metadata.
      */
     static cleanTaskText(line: string): string {
         let cleaned = line;
+
+        // Remove callout prefix (> ) if present
+        cleaned = cleaned.replace(/^>\s*/, '');
 
         // Remove checkbox prefix (- [ ] or - [x])
         cleaned = cleaned.replace(/^\s*-\s*\[[ xX]\]\s*/, '');
@@ -160,7 +164,7 @@ export class TaskParser {
 
         return {
             lineNumber,
-            cleanText: this.cleanTaskText(line),
+            displayText: this.cleanTaskText(line),
             priority: this.extractPriority(line),
             checked,
             sourcePath: this.extractSourcePath(line, app),
@@ -212,8 +216,8 @@ export class TaskParser {
 
                 let score = 0;
 
-                // Strong signal: cleanText matches
-                if (oldState.cleanText === newState.cleanText) {
+                // Strong signal: displayText matches
+                if (oldState.displayText === newState.displayText) {
                     score += 3;
                 }
 
@@ -269,5 +273,47 @@ export class TaskParser {
                 state: m.newState,
                 nowChecked: m.newState.checked,
             }));
+    }
+
+    /**
+     * Lightly clean a task line for note-mirror display/matching.
+     * Strips: callout prefix, checkbox prefix, Tasks plugin completion metadata.
+     * Preserves tags, bold, other emojis, and all other content.
+     */
+    static trimCheckbox(line: string): string {
+        let cleaned = line;
+        // Strip callout prefix
+        cleaned = cleaned.replace(/^>\s*/, '');
+        // Strip checkbox prefix
+        cleaned = cleaned.replace(/^\s*-\s*\[[ xX]\]\s*/, '');
+        // Strip Tasks plugin completion metadata (✅ date)
+        cleaned = cleaned.replace(/✅\s*\d{4}-\d{2}-\d{2}/g, '');
+        cleaned = cleaned.replace(/✅/g, '');
+        return cleaned.trim();
+    }
+
+    /**
+     * Extract all tags from a line.
+     */
+    static extractTags(line: string): string[] {
+        const matches = line.match(TAG_REGEX);
+        return matches ?? [];
+    }
+
+    /**
+     * Check if a line contains a specific emoji.
+     */
+    static containsEmoji(line: string, emoji: string): boolean {
+        return emoji !== '' && line.includes(emoji);
+    }
+
+    /**
+     * Strip callout prefix (`> `) from a line.
+     */
+    static stripCalloutPrefix(line: string): string {
+        if (line.startsWith('> ')) {
+            return line.slice(2);
+        }
+        return line;
     }
 }

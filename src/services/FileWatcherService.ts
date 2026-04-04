@@ -1,27 +1,25 @@
 import { App, TFile, EventRef } from 'obsidian';
 import { PluginSettings } from '../settings';
+import { PriorityScanLink, NoteMirrorLink } from '../models/TaskLink';
 
 /**
  * Service for debounced file watching and sync triggering.
- * Critical: Ignores the daily note to prevent sync loops.
- * Supports incremental scanning by passing the changed file to onSync.
+ * Routes file changes to the correct sync handler based on which TaskLinks are affected.
  */
 export class FileWatcherService {
     private debounceTimer: ReturnType<typeof setTimeout> | null = null;
     private eventRef: EventRef | null = null;
     private pendingFile: TFile | null = null;
+    private pendingLinkIds: Set<string> = new Set();
 
     constructor(
         private app: App,
         private settings: PluginSettings,
-        private onSync: (file?: TFile) => Promise<void>,
+        private onSync: (file: TFile | undefined, linkIds: Set<string>) => Promise<void>,
         private getDailyNotePath: () => string | null,
-        private isExcluded: (file: TFile) => boolean
+        private pluginModifiedFiles: Set<string>
     ) { }
 
-    /**
-     * Start watching vault for file modifications.
-     */
     start(): void {
         this.eventRef = this.app.vault.on('modify', (file) => {
             if (file instanceof TFile) {
@@ -34,9 +32,6 @@ export class FileWatcherService {
         }
     }
 
-    /**
-     * Stop watching and clean up.
-     */
     stop(): void {
         if (this.eventRef) {
             this.app.vault.offref(this.eventRef);
@@ -47,47 +42,55 @@ export class FileWatcherService {
             this.debounceTimer = null;
         }
         this.pendingFile = null;
+        this.pendingLinkIds.clear();
 
         if (this.settings.enableDebugLogging) {
             console.debug('[TaskSync] FileWatcher stopped');
         }
     }
 
-    /**
-     * Handle file modification event.
-     * Ignores daily note and excluded files. Debounces rapid changes.
-     */
     private handleModify(file: TFile): void {
-        // Skip if sync shouldn't trigger for this file
-        if (!this.shouldTriggerSync(file)) {
-            return;
+        if (!file.path.endsWith('.md')) return;
+
+        // Skip daily note
+        const dailyNotePath = this.getDailyNotePath();
+        if (dailyNotePath && file.path === dailyNotePath) return;
+
+        // Skip files the plugin just modified (shared processing guard)
+        if (this.pluginModifiedFiles.has(file.path)) return;
+
+        // Determine which links are affected by this file change
+        const affectedLinkIds = this.getAffectedLinkIds(file);
+        if (affectedLinkIds.size === 0) return;
+
+        // Track pending links
+        for (const id of affectedLinkIds) {
+            this.pendingLinkIds.add(id);
         }
 
-        // Track the file that triggered this sync
-        // If multiple files change during debounce, we'll do a full vault scan
+        // Track file for incremental priority scan
         if (this.pendingFile && this.pendingFile.path !== file.path) {
-            // Multiple different files changed - clear pending to trigger full scan
-            this.pendingFile = null;
+            this.pendingFile = null; // Multiple files → full scan
         } else {
             this.pendingFile = file;
         }
 
-        // Clear existing debounce timer
         if (this.debounceTimer) {
             clearTimeout(this.debounceTimer);
         }
 
-        // Set new debounce timer
         const fileToSync = this.pendingFile;
+        const linkIdsToSync = new Set(this.pendingLinkIds);
+
         this.debounceTimer = setTimeout(async () => {
             this.debounceTimer = null;
             this.pendingFile = null;
+            this.pendingLinkIds.clear();
             try {
-                // Pass the specific file for incremental scan, or undefined for full scan
                 if (this.settings.enableDebugLogging) {
-                    console.log(`[TaskSync] Triggering sync - incremental: ${fileToSync?.path ?? 'FULL SCAN'}`);
+                    console.log(`[TaskSync] Triggering sync for links: [${[...linkIdsToSync].join(', ')}] - file: ${fileToSync?.path ?? 'FULL SCAN'}`);
                 }
-                await this.onSync(fileToSync ?? undefined);
+                await this.onSync(fileToSync ?? undefined, linkIdsToSync);
             } catch (error) {
                 if (this.settings.enableDebugLogging) {
                     console.error('[TaskSync] Sync failed:', error);
@@ -97,26 +100,49 @@ export class FileWatcherService {
     }
 
     /**
-     * Check if file should trigger a sync.
-     * Returns false for daily note (loop prevention) and excluded files.
+     * Determine which links are affected by a file change.
      */
-    private shouldTriggerSync(file: TFile): boolean {
-        // Only trigger for markdown files
-        if (!file.path.endsWith('.md')) {
-            return false;
+    private getAffectedLinkIds(file: TFile): Set<string> {
+        const ids = new Set<string>();
+
+        for (const link of this.settings.taskLinks) {
+            if (!link.enabled) continue;
+
+            if (link.type === 'priority-scan') {
+                const psLink = link as PriorityScanLink;
+                if (!this.isExcludedByLink(file, psLink)) {
+                    ids.add(link.id);
+                }
+            } else if (link.type === 'note-mirror') {
+                const nmLink = link as NoteMirrorLink;
+                if (file.path === nmLink.sourceNotePath) {
+                    ids.add(link.id);
+                }
+            }
         }
 
-        // CRITICAL: Ignore daily note to prevent sync loops
-        const dailyNotePath = this.getDailyNotePath();
-        if (dailyNotePath && file.path === dailyNotePath) {
-            return false;
-        }
+        return ids;
+    }
 
-        // Skip excluded files - no need to scan them
-        if (this.isExcluded(file)) {
-            return false;
+    /**
+     * Check if a file is excluded by a priority-scan link's exclusion settings.
+     */
+    private isExcludedByLink(file: TFile, link: PriorityScanLink): boolean {
+        for (const folder of link.excludedFolders) {
+            if (folder && (file.path.startsWith(folder + '/') || file.path.startsWith(folder))) {
+                return true;
+            }
         }
-
-        return true;
+        for (const excludedFile of link.excludedFiles) {
+            if (excludedFile && file.path === excludedFile) {
+                return true;
+            }
+        }
+        for (const fileName of link.excludedFileNames) {
+            if (fileName && file.name === fileName) {
+                return true;
+            }
+        }
+        return false;
     }
 }

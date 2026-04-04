@@ -1,15 +1,17 @@
 /**
- * Represents a high-priority task found in the vault.
+ * A task that can be synced to the daily note.
+ * Used by both priority-scan and note-mirror connections.
  */
-export interface PriorityTask {
+export interface SyncableTask {
     /** The full raw text of the task line found in the source */
     originalLine: string;
 
     /**
-     * The "clean" text used for deduplication.
-     * Stripped of checkboxes (- [ ]), priority markers (🔺/⏫), and wikilinks.
+     * Display/matching text.
+     * - Priority-scan: aggressively cleaned (stripped of checkboxes, priority markers, wikilinks, metadata).
+     * - Note-mirror: lightly cleaned (checkbox prefix stripped only). Preserves tags, dates, and other content.
      */
-    cleanText: string;
+    displayText: string;
 
     /** Path to source file (relative to vault root) */
     filePath: string;
@@ -17,16 +19,22 @@ export interface PriorityTask {
     /** Line number in source file (0-indexed) */
     lineNumber: number;
 
-    /** Priority level */
-    priority: 'highest' | 'high';
+    /** Priority level. Present for priority-scan tasks, absent for note-mirror tasks. */
+    priority?: 'highest' | 'high';
+
+    /** ID of the TaskLink connection that produced this task */
+    linkId: string;
+
+    /** Leading whitespace (indentation) from the original line */
+    indent?: string;
 }
 
 /**
  * Represents a task already synced to the daily note.
  */
 export interface SyncedTask {
-    /** Clean text (for deduplication matching) */
-    cleanText: string;
+    /** Display text (for deduplication matching) */
+    displayText: string;
 
     /** The full line as it currently exists in the Daily Note */
     line: string;
@@ -48,8 +56,8 @@ export interface CheckboxState {
     /** Whether checkbox is checked */
     checked: boolean;
 
-    /** Clean text for matching to source */
-    cleanText: string;
+    /** Display text for matching to source */
+    displayText: string;
 
     /** Source file path extracted from wikilink */
     sourcePath: string | null;

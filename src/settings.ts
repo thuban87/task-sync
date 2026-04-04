@@ -1,67 +1,79 @@
 import { App, PluginSettingTab, Setting, TFolder } from 'obsidian';
 import type TaskSyncPlugin from '../main';
+import { TaskLink, PriorityScanLink, NoteMirrorLink, DEFAULT_PRIORITY_SCAN_LINK, DEFAULT_NOTE_MIRROR_LINK, generateId } from './models/TaskLink';
 
 /**
  * Plugin settings interface.
  */
 export interface PluginSettings {
-    /** Enable/disable the sync feature */
+    settingsVersion: number;
     enabled: boolean;
-
-    /** Section header to target in daily note */
-    sectionHeader: string;
-
-    /** Maximum tasks to sync (0 = unlimited) */
-    taskLimit: number;
-
-    /** Debounce delay in milliseconds */
     debounceMs: number;
-
-    /** Include 'highest' priority (⏫) tasks */
-    includeHighest: boolean;
-
-    /** Include 'high' priority (🔺) tasks */
-    includeHigh: boolean;
-
-    /** Enable two-way sync (daily note → source) */
-    enableReverseSync: boolean;
-
-    /** Folders to exclude from scanning */
-    excludedFolders: string[];
-
-    /** Files to exclude from scanning (full path) */
-    excludedFiles: string[];
-
-    /** File names to exclude from scanning (matches any directory) */
-    excludedFileNames: string[];
-
-    /** Enable verbose debug logging in console */
     enableDebugLogging: boolean;
+    taskLinks: TaskLink[];
 }
 
 /**
  * Default settings values.
  */
 export const DEFAULT_SETTINGS: PluginSettings = {
+    settingsVersion: 1,
     enabled: true,
-    sectionHeader: '## ⚡ High Priority Tasks',
-    taskLimit: 5,
     debounceMs: 3500,
-    includeHighest: true,
-    includeHigh: true,
-    enableReverseSync: true,
-    excludedFolders: [],
-    excludedFiles: [],
-    excludedFileNames: [],
     enableDebugLogging: false,
+    taskLinks: [{ ...DEFAULT_PRIORITY_SCAN_LINK }],
 };
+
+/**
+ * Migrate old flat settings format to new taskLinks format.
+ * Old format (version 0): flat settings with sectionHeader, taskLimit, etc. at top level.
+ * New format (version 1): settings with taskLinks[] array.
+ */
+export function migrateSettings(data: any): PluginSettings {
+    if (!data) {
+        return { ...DEFAULT_SETTINGS, taskLinks: [{ ...DEFAULT_PRIORITY_SCAN_LINK }] };
+    }
+
+    // Already migrated
+    if (data.settingsVersion >= 1 && data.taskLinks) {
+        return data as PluginSettings;
+    }
+
+    // Migrate from version 0 (flat format)
+    const priorityScanLink: PriorityScanLink = {
+        ...DEFAULT_PRIORITY_SCAN_LINK,
+        sectionHeader: data.sectionHeader ?? DEFAULT_PRIORITY_SCAN_LINK.sectionHeader,
+        taskLimit: data.taskLimit ?? DEFAULT_PRIORITY_SCAN_LINK.taskLimit,
+        enableBidirectionalSync: data.enableReverseSync ?? DEFAULT_PRIORITY_SCAN_LINK.enableBidirectionalSync,
+        includeHighest: data.includeHighest ?? DEFAULT_PRIORITY_SCAN_LINK.includeHighest,
+        includeHigh: data.includeHigh ?? DEFAULT_PRIORITY_SCAN_LINK.includeHigh,
+        excludedFolders: data.excludedFolders ?? DEFAULT_PRIORITY_SCAN_LINK.excludedFolders,
+        excludedFiles: data.excludedFiles ?? DEFAULT_PRIORITY_SCAN_LINK.excludedFiles,
+        excludedFileNames: data.excludedFileNames ?? DEFAULT_PRIORITY_SCAN_LINK.excludedFileNames,
+    };
+
+    return {
+        settingsVersion: 1,
+        enabled: data.enabled ?? DEFAULT_SETTINGS.enabled,
+        debounceMs: data.debounceMs ?? DEFAULT_SETTINGS.debounceMs,
+        enableDebugLogging: data.enableDebugLogging ?? DEFAULT_SETTINGS.enableDebugLogging,
+        taskLinks: [priorityScanLink],
+    };
+}
+
+/**
+ * Helper to get the first priority-scan link from settings.
+ */
+export function getPriorityScanLink(settings: PluginSettings): PriorityScanLink | undefined {
+    return settings.taskLinks.find((l): l is PriorityScanLink => l.type === 'priority-scan');
+}
 
 /**
  * Settings tab UI.
  */
 export class TaskSyncSettingTab extends PluginSettingTab {
     plugin: TaskSyncPlugin;
-    private sectionHeaderDebounce: ReturnType<typeof setTimeout> | null = null;
+    private debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
     constructor(app: App, plugin: TaskSyncPlugin) {
         super(app, plugin);
@@ -74,7 +86,8 @@ export class TaskSyncSettingTab extends PluginSettingTab {
 
         containerEl.createEl('h2', { text: 'Task Sync Settings' });
 
-        // Master toggle
+        // === Global Settings ===
+
         new Setting(containerEl)
             .setName('Enable sync')
             .setDesc('Turn task syncing on or off')
@@ -84,46 +97,12 @@ export class TaskSyncSettingTab extends PluginSettingTab {
                     this.plugin.settings.enabled = value;
                     await this.plugin.saveSettings();
                     if (value) {
-                        this.plugin.startServices();
+                        await this.plugin.restartServices();
                     } else {
                         this.plugin.stopServices();
                     }
                 }));
 
-        // Section header (with debounce to prevent rapid saves)
-        new Setting(containerEl)
-            .setName('Section header')
-            .setDesc('The header in your daily note where tasks will be synced')
-            .addText(text => text
-                .setPlaceholder('## ⚡ High Priority Tasks')
-                .setValue(this.plugin.settings.sectionHeader)
-                .onChange((value) => {
-                    // Debounce saves to prevent rapid file writes
-                    if (this.sectionHeaderDebounce) {
-                        clearTimeout(this.sectionHeaderDebounce);
-                    }
-                    this.sectionHeaderDebounce = setTimeout(async () => {
-                        this.plugin.settings.sectionHeader = value;
-                        await this.plugin.saveSettings();
-                    }, 300);
-                }));
-
-        // Task limit
-        new Setting(containerEl)
-            .setName('Task limit')
-            .setDesc('Maximum number of tasks to sync (0 = no limit)')
-            .addText(text => text
-                .setPlaceholder('5')
-                .setValue(String(this.plugin.settings.taskLimit))
-                .onChange(async (value) => {
-                    const num = parseInt(value, 10);
-                    if (!isNaN(num) && num >= 0) {
-                        this.plugin.settings.taskLimit = num;
-                        await this.plugin.saveSettings();
-                    }
-                }));
-
-        // Debounce delay
         new Setting(containerEl)
             .setName('Debounce delay')
             .setDesc('How long to wait after file changes before syncing (in milliseconds)')
@@ -136,46 +115,6 @@ export class TaskSyncSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        containerEl.createEl('h3', { text: 'Priority Filters' });
-
-        // Include highest priority
-        new Setting(containerEl)
-            .setName('Include highest priority (⏫)')
-            .setDesc('Sync tasks marked with the highest priority emoji')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.includeHighest)
-                .onChange(async (value) => {
-                    this.plugin.settings.includeHighest = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        // Include high priority
-        new Setting(containerEl)
-            .setName('Include high priority (🔺)')
-            .setDesc('Sync tasks marked with the high priority emoji')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.includeHigh)
-                .onChange(async (value) => {
-                    this.plugin.settings.includeHigh = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        containerEl.createEl('h3', { text: 'Two-Way Sync' });
-
-        // Enable reverse sync
-        new Setting(containerEl)
-            .setName('Enable reverse sync')
-            .setDesc('When you check a task in your daily note, also check it in the source file')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.enableReverseSync)
-                .onChange(async (value) => {
-                    this.plugin.settings.enableReverseSync = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        containerEl.createEl('h3', { text: 'Developer' });
-
-        // Debug logging toggle
         new Setting(containerEl)
             .setName('Enable debug logging')
             .setDesc('Show verbose logs in the developer console (Ctrl+Shift+I)')
@@ -186,38 +125,283 @@ export class TaskSyncSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        containerEl.createEl('h3', { text: 'Exclusions' });
+        // === Task Links ===
 
-        // Excluded folders
+        containerEl.createEl('h2', { text: 'Task Links' });
+
+        for (let i = 0; i < this.plugin.settings.taskLinks.length; i++) {
+            const link = this.plugin.settings.taskLinks[i];
+            this.renderTaskLink(containerEl, link, i);
+        }
+
+        // Add Note Mirror button
+        new Setting(containerEl)
+            .addButton(button => button
+                .setButtonText('Add Note Mirror')
+                .setCta()
+                .onClick(async () => {
+                    const newLink: NoteMirrorLink = {
+                        ...DEFAULT_NOTE_MIRROR_LINK,
+                        id: generateId(),
+                        sectionHeader: '## New Mirror',
+                    };
+                    this.plugin.settings.taskLinks.push(newLink);
+                    await this.plugin.saveSettings();
+                    await this.plugin.restartServices();
+                    this.display();
+                }));
+    }
+
+    private renderTaskLink(containerEl: HTMLElement, link: TaskLink, index: number): void {
+        const details = containerEl.createEl('details', { cls: 'task-sync-link-section' });
+        details.createEl('summary', {
+            text: `${link.type === 'priority-scan' ? '⚡' : '🔗'} ${link.sectionHeader || '(no header)'}`,
+            cls: 'task-sync-link-summary',
+        });
+
+        const linkContainer = details.createDiv({ cls: 'task-sync-link-settings' });
+
+        // Enabled toggle
+        new Setting(linkContainer)
+            .setName('Enabled')
+            .addToggle(toggle => toggle
+                .setValue(link.enabled)
+                .onChange(async (value) => {
+                    link.enabled = value;
+                    await this.plugin.saveSettings();
+                    await this.plugin.restartServices();
+                }));
+
+        // Section header
+        new Setting(linkContainer)
+            .setName('Section header')
+            .setDesc('The header in your daily note for this link\'s tasks')
+            .addText(text => text
+                .setPlaceholder('## My Tasks')
+                .setValue(link.sectionHeader)
+                .onChange((value) => {
+                    this.debouncedSave(`header-${link.id}`, async () => {
+                        // Validate uniqueness
+                        const duplicate = this.plugin.settings.taskLinks.find(
+                            (l) => l.id !== link.id && l.sectionHeader === value
+                        );
+                        if (duplicate) {
+                            return; // Don't save duplicate headers
+                        }
+                        link.sectionHeader = value;
+                        await this.plugin.saveSettings();
+                    });
+                }));
+
+        // Task limit
+        new Setting(linkContainer)
+            .setName('Task limit')
+            .setDesc('Maximum tasks to sync (0 = no limit)')
+            .addText(text => text
+                .setPlaceholder('0')
+                .setValue(String(link.taskLimit))
+                .onChange(async (value) => {
+                    const num = parseInt(value, 10);
+                    if (!isNaN(num) && num >= 0) {
+                        link.taskLimit = num;
+                        await this.plugin.saveSettings();
+                    }
+                }));
+
+        // Collapsible toggle
+        new Setting(linkContainer)
+            .setName('Collapsible')
+            .setDesc('Render this section as a collapsible callout')
+            .addToggle(toggle => toggle
+                .setValue(link.collapsible)
+                .onChange(async (value) => {
+                    link.collapsible = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        // Callout type (only visible when collapsible is true)
+        if (link.collapsible) {
+            new Setting(linkContainer)
+                .setName('Callout type')
+                .setDesc('The callout type to use (e.g. todo, info, note, tip)')
+                .addText(text => text
+                    .setPlaceholder('todo')
+                    .setValue(link.calloutType)
+                    .onChange(async (value) => {
+                        link.calloutType = value || 'todo';
+                        await this.plugin.saveSettings();
+                    }));
+        }
+
+        // Bidirectional sync toggle
+        new Setting(linkContainer)
+            .setName('Bidirectional sync')
+            .setDesc('Two-way checkbox sync between daily note and source')
+            .addToggle(toggle => toggle
+                .setValue(link.enableBidirectionalSync)
+                .onChange(async (value) => {
+                    link.enableBidirectionalSync = value;
+                    await this.plugin.saveSettings();
+                    await this.plugin.restartServices();
+                }));
+
+        // Type-specific settings
+        if (link.type === 'priority-scan') {
+            this.renderPriorityScanSettings(linkContainer, link);
+        } else {
+            this.renderNoteMirrorSettings(linkContainer, link);
+        }
+
+        // Remove button (only for note-mirror links)
+        if (link.type === 'note-mirror') {
+            new Setting(linkContainer)
+                .addButton(button => button
+                    .setButtonText('Remove this link')
+                    .setWarning()
+                    .onClick(async () => {
+                        this.plugin.settings.taskLinks.splice(index, 1);
+                        await this.plugin.saveSettings();
+                        await this.plugin.restartServices();
+                        this.display();
+                    }));
+        }
+    }
+
+    private renderPriorityScanSettings(containerEl: HTMLElement, link: PriorityScanLink): void {
+        containerEl.createEl('h4', { text: 'Priority Filters' });
+
+        new Setting(containerEl)
+            .setName('Include highest priority (⏫)')
+            .addToggle(toggle => toggle
+                .setValue(link.includeHighest)
+                .onChange(async (value) => {
+                    link.includeHighest = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Include high priority (🔺)')
+            .addToggle(toggle => toggle
+                .setValue(link.includeHigh)
+                .onChange(async (value) => {
+                    link.includeHigh = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        containerEl.createEl('h4', { text: 'Exclusions' });
+
         this.renderExclusionList(
             containerEl,
             'Excluded folders',
-            'Folders to ignore when scanning for tasks',
-            this.plugin.settings.excludedFolders,
+            'Folders to ignore when scanning',
+            link.excludedFolders,
             'folder'
         );
 
-        // Excluded files
         this.renderExclusionList(
             containerEl,
             'Excluded files',
-            'Files to ignore when scanning for tasks (full path)',
-            this.plugin.settings.excludedFiles,
+            'Files to ignore (full path)',
+            link.excludedFiles,
             'file'
         );
 
-        // Excluded file names
         this.renderFileNameExclusionList(
             containerEl,
             'Excluded file names',
-            'File names to ignore in ANY directory (e.g., "Session Log.md")',
-            this.plugin.settings.excludedFileNames
+            'File names to ignore in ANY directory',
+            link.excludedFileNames
         );
     }
 
-    /**
-     * Render an exclusion list with add/remove functionality.
-     */
+    private renderNoteMirrorSettings(containerEl: HTMLElement, link: NoteMirrorLink): void {
+        // Source note path with autocomplete
+        new Setting(containerEl)
+            .setName('Source note')
+            .setDesc('The note to mirror tasks from')
+            .addSearch(search => {
+                search
+                    .setPlaceholder('Path to source note...')
+                    .setValue(link.sourceNotePath);
+
+                const inputEl = search.inputEl;
+                inputEl.addEventListener('input', () => {
+                    this.showSuggestions(inputEl, inputEl.value, 'file');
+                });
+                inputEl.addEventListener('blur', () => {
+                    this.debouncedSave(`source-${link.id}`, async () => {
+                        link.sourceNotePath = inputEl.value;
+                        await this.plugin.saveSettings();
+                        await this.plugin.restartServices();
+                    });
+                });
+            });
+
+        // Source sections
+        new Setting(containerEl)
+            .setName('Source sections')
+            .setDesc('Section headers to pull from (comma-separated, empty = all)')
+            .addText(text => text
+                .setPlaceholder('## Tasks, ## Homework')
+                .setValue(link.sourceSections.join(', '))
+                .onChange((value) => {
+                    this.debouncedSave(`sections-${link.id}`, async () => {
+                        link.sourceSections = value
+                            ? value.split(',').map(s => s.trim()).filter(s => s)
+                            : [];
+                        await this.plugin.saveSettings();
+                    });
+                }));
+
+        // Exclude emoji
+        new Setting(containerEl)
+            .setName('Exclude emoji')
+            .setDesc('Tasks containing this emoji will be skipped')
+            .addText(text => text
+                .setPlaceholder('🚫')
+                .setValue(link.excludeEmoji)
+                .onChange(async (value) => {
+                    link.excludeEmoji = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        // Include completed
+        new Setting(containerEl)
+            .setName('Include completed tasks')
+            .setDesc('Whether to sync tasks that are already checked')
+            .addToggle(toggle => toggle
+                .setValue(link.includeCompleted)
+                .onChange(async (value) => {
+                    link.includeCompleted = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        // Filter tags
+        new Setting(containerEl)
+            .setName('Filter tags')
+            .setDesc('Only sync tasks with these tags (comma-separated, empty = no filter)')
+            .addText(text => text
+                .setPlaceholder('#homework, #urgent')
+                .setValue(link.filterTags.join(', '))
+                .onChange((value) => {
+                    this.debouncedSave(`tags-${link.id}`, async () => {
+                        link.filterTags = value
+                            ? value.split(',').map(s => s.trim()).filter(s => s)
+                            : [];
+                        await this.plugin.saveSettings();
+                    });
+                }));
+    }
+
+    private debouncedSave(key: string, fn: () => Promise<void>): void {
+        const existing = this.debounceTimers.get(key);
+        if (existing) clearTimeout(existing);
+        this.debounceTimers.set(key, setTimeout(() => {
+            this.debounceTimers.delete(key);
+            fn();
+        }, 300));
+    }
+
     private renderExclusionList(
         containerEl: HTMLElement,
         name: string,
@@ -229,16 +413,14 @@ export class TaskSyncSettingTab extends PluginSettingTab {
             .setName(name)
             .setDesc(desc);
 
-        // Add button
         setting.addButton(button => button
             .setButtonText('Add')
             .onClick(async () => {
                 list.push('');
                 await this.plugin.saveSettings();
-                this.display(); // Refresh UI
+                this.display();
             }));
 
-        // Render existing items
         for (let i = 0; i < list.length; i++) {
             const itemSetting = new Setting(containerEl)
                 .setClass('task-sync-exclusion-item');
@@ -248,15 +430,11 @@ export class TaskSyncSettingTab extends PluginSettingTab {
                     .setPlaceholder(type === 'folder' ? 'Folder path...' : 'File path...')
                     .setValue(list[i]);
 
-                // Add autocomplete suggestions
                 const inputEl = search.inputEl;
                 inputEl.addEventListener('input', () => {
-                    const value = inputEl.value;
-                    this.showSuggestions(inputEl, value, type);
+                    this.showSuggestions(inputEl, inputEl.value, type);
                 });
-
                 inputEl.addEventListener('blur', async () => {
-                    // Save on blur
                     setTimeout(async () => {
                         list[i] = inputEl.value;
                         await this.plugin.saveSettings();
@@ -264,23 +442,18 @@ export class TaskSyncSettingTab extends PluginSettingTab {
                 });
             });
 
-            // Remove button
             itemSetting.addButton(button => button
                 .setButtonText('Remove')
                 .setWarning()
                 .onClick(async () => {
                     list.splice(i, 1);
                     await this.plugin.saveSettings();
-                    this.display(); // Refresh UI
+                    this.display();
                 }));
         }
     }
 
-    /**
-     * Show autocomplete suggestions for path input.
-     */
     private showSuggestions(inputEl: HTMLInputElement, query: string, type: 'folder' | 'file'): void {
-        // Remove existing suggestions
         const existingSuggestions = document.querySelector('.task-sync-suggestions');
         if (existingSuggestions) {
             existingSuggestions.remove();
@@ -292,15 +465,13 @@ export class TaskSyncSettingTab extends PluginSettingTab {
         const lowerQuery = query.toLowerCase();
 
         if (type === 'folder') {
-            // Get all folders
             const folders = this.app.vault.getAllLoadedFiles()
-                .filter(f => f instanceof TFolder) // Is a folder
+                .filter(f => f instanceof TFolder)
                 .map(f => f.path)
                 .filter(p => p.toLowerCase().includes(lowerQuery))
                 .slice(0, 10);
             suggestions.push(...folders);
         } else {
-            // Get all markdown files
             const files = this.app.vault.getMarkdownFiles()
                 .map(f => f.path)
                 .filter(p => p.toLowerCase().includes(lowerQuery))
@@ -310,7 +481,6 @@ export class TaskSyncSettingTab extends PluginSettingTab {
 
         if (suggestions.length === 0) return;
 
-        // Create suggestions dropdown
         const suggestionsEl = document.createElement('div');
         suggestionsEl.className = 'task-sync-suggestions';
         suggestionsEl.style.cssText = 'position:absolute;background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:4px;max-height:200px;overflow-y:auto;z-index:1000;';
@@ -333,14 +503,12 @@ export class TaskSyncSettingTab extends PluginSettingTab {
             suggestionsEl.appendChild(item);
         }
 
-        // Position below input
         const rect = inputEl.getBoundingClientRect();
         suggestionsEl.style.top = `${rect.bottom}px`;
         suggestionsEl.style.left = `${rect.left}px`;
         suggestionsEl.style.width = `${rect.width}px`;
         document.body.appendChild(suggestionsEl);
 
-        // Remove on click outside
         const removeHandler = (e: MouseEvent) => {
             if (!suggestionsEl.contains(e.target as Node)) {
                 suggestionsEl.remove();
@@ -350,9 +518,6 @@ export class TaskSyncSettingTab extends PluginSettingTab {
         setTimeout(() => document.addEventListener('click', removeHandler), 0);
     }
 
-    /**
-     * Render a simple text-based exclusion list for file names.
-     */
     private renderFileNameExclusionList(
         containerEl: HTMLElement,
         name: string,
@@ -363,16 +528,14 @@ export class TaskSyncSettingTab extends PluginSettingTab {
             .setName(name)
             .setDesc(desc);
 
-        // Add button
         setting.addButton(button => button
             .setButtonText('Add')
             .onClick(async () => {
                 list.push('');
                 await this.plugin.saveSettings();
-                this.display(); // Refresh UI
+                this.display();
             }));
 
-        // Render existing items
         for (let i = 0; i < list.length; i++) {
             const itemSetting = new Setting(containerEl)
                 .setClass('task-sync-exclusion-item');
@@ -387,14 +550,13 @@ export class TaskSyncSettingTab extends PluginSettingTab {
                     });
             });
 
-            // Remove button
             itemSetting.addButton(button => button
                 .setButtonText('Remove')
                 .setWarning()
                 .onClick(async () => {
                     list.splice(i, 1);
                     await this.plugin.saveSettings();
-                    this.display(); // Refresh UI
+                    this.display();
                 }));
         }
     }
