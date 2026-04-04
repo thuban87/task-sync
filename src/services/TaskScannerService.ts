@@ -1,6 +1,7 @@
 import { App, TFile } from 'obsidian';
-import { PriorityTask } from '../models/PriorityTask';
+import { SyncableTask } from '../models/SyncableTask';
 import { PluginSettings } from '../settings';
+import { PriorityScanLink } from '../models/TaskLink';
 import { TaskParser } from '../utils/TaskParser';
 
 /**
@@ -14,37 +15,30 @@ export class TaskScannerService {
     ) { }
 
     /**
-     * Scan entire vault for uncompleted priority tasks.
-     * Uses metadataCache to skip files without list items.
-     * If a specific file is provided, only scans that file.
-     * @param file Optional file to scan (for incremental scanning)
-     * @returns Array of PriorityTask objects, sorted by priority (highest first)
+     * Get the priority-scan link's exclusion settings.
      */
-    async scanVault(file?: TFile): Promise<PriorityTask[]> {
-        // If specific file provided, use incremental scan
+    private getPriorityScanLink(): PriorityScanLink | undefined {
+        return this.settings.taskLinks.find(
+            (l): l is PriorityScanLink => l.type === 'priority-scan'
+        );
+    }
+
+    async scanVault(file?: TFile): Promise<SyncableTask[]> {
         if (file) {
             return this.scanFile(file);
         }
 
-        const allTasks: PriorityTask[] = [];
+        const allTasks: SyncableTask[] = [];
         const files = this.app.vault.getMarkdownFiles();
 
         for (const f of files) {
-            // Skip excluded files
-            if (this.isExcluded(f)) {
-                continue;
-            }
-
-            // Skip files without list items (performance optimization)
-            if (!this.hasListItems(f)) {
-                continue;
-            }
+            if (this.isExcluded(f)) continue;
+            if (!this.hasListItems(f)) continue;
 
             const tasks = await this.parseFile(f);
             allTasks.push(...tasks);
         }
 
-        // Sort by priority (highest first)
         return allTasks.sort((a, b) => {
             if (a.priority === 'highest' && b.priority !== 'highest') return -1;
             if (a.priority !== 'highest' && b.priority === 'highest') return 1;
@@ -52,22 +46,13 @@ export class TaskScannerService {
         });
     }
 
-    /**
-     * Scan a single file for priority tasks.
-     * Used for incremental scanning when only one file changed.
-     * NOTE: Skips hasListItems() cache check since cache may be stale after file modification.
-     * @param file The file to scan
-     * @returns Array of PriorityTask objects from this file
-     */
-    async scanFile(file: TFile): Promise<PriorityTask[]> {
+    async scanFile(file: TFile): Promise<SyncableTask[]> {
         if (this.isExcluded(file)) {
             if (this.settings.enableDebugLogging) {
                 console.log(`[TaskSync] scanFile: ${file.path} is excluded, skipping`);
             }
             return [];
         }
-        // NOTE: Don't check hasListItems() here - cache may be stale after file modification
-        // The parseFile call is cheap enough for a single file
         const tasks = await this.parseFile(file);
         if (this.settings.enableDebugLogging) {
             console.log(`[TaskSync] scanFile: ${file.path} found ${tasks.length} priority tasks`);
@@ -75,35 +60,25 @@ export class TaskScannerService {
         return tasks;
     }
 
-    /**
-     * Check if file is excluded by settings.
-     */
     isExcluded(file: TFile): boolean {
-        // Check excluded folders
-        for (const folder of this.settings.excludedFolders) {
-            if (folder && file.path.startsWith(folder + '/')) {
-                return true;
-            }
-            // Also match root folder
-            if (folder && file.path.startsWith(folder)) {
+        const link = this.getPriorityScanLink();
+        if (!link) return false;
+
+        for (const folder of link.excludedFolders) {
+            if (folder && (file.path.startsWith(folder + '/') || file.path.startsWith(folder))) {
                 return true;
             }
         }
-
-        // Check excluded files (full path)
-        for (const excludedFile of this.settings.excludedFiles) {
+        for (const excludedFile of link.excludedFiles) {
             if (excludedFile && file.path === excludedFile) {
                 return true;
             }
         }
-
-        // Check excluded file names (matches in any directory)
-        for (const fileName of this.settings.excludedFileNames) {
+        for (const fileName of link.excludedFileNames) {
             if (fileName && file.name === fileName) {
                 return true;
             }
         }
-
         return false;
     }
 
@@ -120,9 +95,9 @@ export class TaskScannerService {
      * Parse a single file for priority tasks.
      * Only called if hasListItems() returns true.
      */
-    private async parseFile(file: TFile): Promise<PriorityTask[]> {
+    private async parseFile(file: TFile): Promise<SyncableTask[]> {
         try {
-            const tasks: PriorityTask[] = [];
+            const tasks: SyncableTask[] = [];
             const content = await this.app.vault.read(file);
             const lines = content.split('\n');
 
@@ -142,10 +117,11 @@ export class TaskScannerService {
 
                 tasks.push({
                     originalLine: line,
-                    cleanText: TaskParser.cleanTaskText(line),
+                    displayText: TaskParser.cleanTaskText(line),
                     filePath: file.path,
                     lineNumber: i,
                     priority,
+                    linkId: '',
                 });
             }
 

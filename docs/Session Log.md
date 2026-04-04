@@ -342,3 +342,92 @@ chore: add error handling, sync notice, fix task duplication bug
 Files changed: constants.ts, main.ts, DailyNoteService.ts, 
 TaskScannerService.ts, ReverseSyncService.ts, SourceToDailySyncService.ts
 ```
+
+---
+
+## 2026-04-03 - Task Links Refactor (Multi-Connection System)
+
+**Focus:** Implement the full Task Links refactor plan (`docs/Task Links Refactor Plan.md`) — evolving the plugin from a single-purpose priority task scanner into a multi-connection task syncing system.
+
+### Completed (all 9 phases from the refactor plan):
+
+#### Phase 1: Data Model & Migration
+- ✅ Created `src/models/TaskLink.ts` — discriminated union: `PriorityScanLink | NoteMirrorLink`
+- ✅ Renamed `PriorityTask` → `SyncableTask`, `cleanText` → `displayText`, added `linkId`, optional `priority`, `indent`
+- ✅ Deleted `src/models/PriorityTask.ts`
+- ✅ Settings migration (version 0→1) converts old flat format to `taskLinks[]` array
+- ✅ `PluginSettings` simplified: `{ settingsVersion, enabled, debounceMs, enableDebugLogging, taskLinks[] }`
+
+#### Phase 2: DailyNoteService Multi-Section Support
+- ✅ `appendNewTasks(dailyNote, tasks, link)` — section-aware, per-link formatting
+- ✅ `findSectionBoundaries(content, links)` — returns `Map<linkId, {start, contentStart, contentEnd}>`
+- ✅ `findSectionInsertPoint` — handles plain headings and callout headers
+- ✅ `formatTask` — priority-scan gets wikilink+emoji, note-mirror gets plain text with preserved indentation
+- ✅ Collapsible callout support: `> [!type]- Header` / `> [!type]+ Header` with auto-creation from plain heading
+
+#### Phase 3: NoteMirrorScannerService
+- ✅ Created `src/services/NoteMirrorScannerService.ts`
+- ✅ Scans a single source note for tasks, filtered by sourceSections, excludeEmoji, filterTags, includeCompleted
+
+#### Phase 4: FileWatcher Refactor
+- ✅ `pendingLinkIds: Set<string>` tracks affected links during debounce
+- ✅ `getAffectedLinkIds(file)` routes files to the correct links
+- ✅ Shared `pluginModifiedFiles: Set<string>` guard replaces per-service `isProcessing` flags
+
+#### Phase 5: Bidirectional Sync for Multiple Connections
+- ✅ `ReverseSyncService.startWatching(dailyNote, links[])` — section-scoped ownership via `findSectionBoundaries`
+- ✅ `SourceToDailySyncService.startWatching(dailyNote, links[])` — link-type-aware matching cache
+- ✅ Both services use `pluginModifiedFiles` shared guard
+
+#### Phase 6: Settings UI Overhaul
+- ✅ Per-link collapsible `<details>` sections in settings
+- ✅ Add/remove note-mirror links, section header uniqueness validation
+- ✅ Configurable callout type per link
+
+#### Phase 7: Full Sync + Daily Note Creation
+- ✅ `syncAllLinks()` iterates enabled links sequentially
+- ✅ Daily note creation handler triggers sync + reverse sync setup
+- ✅ `restartServices()` for settings changes
+
+#### Phase 8: Collapsible Callout Rendering
+- ✅ Callout auto-creation: plain heading → `> [!type]- HeaderText` on first sync
+- ✅ Callout prefix handling in task formatting and parsing
+
+#### Phase 9: Polish
+- ✅ Dedup, append-only invariant, debug logging throughout
+- ✅ Vault rename/delete handlers for note-mirror source paths
+- ✅ Manual sync command renamed to "Sync all task links now"
+
+### Bugs Fixed During Testing:
+
+1. **Section header not found** — `vault.read()` reads from disk while editor changes are in Obsidian's in-memory cache. Fixed by using `vault.cachedRead()` in `appendNewTasks`.
+2. **Collapsible section matching** — `findHeaderLine` only searched for callout syntax `> [!todo]- Header` and didn't fall back to plain heading `## Header`. Fixed with fallback logic and auto-creation of callout on first insert.
+3. **Callout checkbox regex** — `CHECKBOX_REGEX`, `UNCOMPLETED_CHECKBOX_REGEX`, `COMPLETED_CHECKBOX_REGEX` required lines to start with `\s*-`, so callout lines `> - [ ]` never matched. Updated all three to accept optional `> ` prefix.
+4. **Completion metadata in matching** — Tasks plugin appends `✅ 2026-04-03` when checking a task. `trimCheckbox()` didn't strip this, causing match failures in reverse sync. Fixed by stripping `✅` and completion dates in both `trimCheckbox()` and `cleanTaskText()`.
+5. **Subtask indentation lost** — All tasks were rendered at the same level on the daily note. Fixed by capturing `indent` from original line and applying it in `formatTask`.
+6. **Tasks plugin callout warning** — Suppressed `console.warn` for the "Tasks cannot add or remove completion dates" message in `onload()`, restored in `onunload()`.
+
+### Files Changed:
+
+**Created:**
+- `src/models/TaskLink.ts`
+- `src/models/SyncableTask.ts`
+- `src/services/NoteMirrorScannerService.ts`
+
+**Deleted:**
+- `src/models/PriorityTask.ts`
+
+**Rewritten:**
+- `main.ts`, `src/settings.ts`, `src/services/DailyNoteService.ts`, `src/services/FileWatcherService.ts`, `src/services/ReverseSyncService.ts`, `src/services/SourceToDailySyncService.ts`
+
+**Updated:**
+- `src/constants.ts`, `src/utils/TaskParser.ts`, `src/services/TaskScannerService.ts`
+
+### Testing Notes:
+
+- ✅ Build passes with zero TypeScript errors
+- ✅ Priority-scan link: vault scan, dedup, bidirectional sync all working
+- ✅ Note-mirror link: source note scan, section filtering, bidirectional sync all working
+- ✅ Subtask indentation preserved on daily note
+- ✅ Settings migration from old format works correctly
+- ✅ Deployed and tested on test vault

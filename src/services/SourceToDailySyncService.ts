@@ -3,47 +3,48 @@ import { DailyNoteService } from './DailyNoteService';
 import { TaskParser } from '../utils/TaskParser';
 import { CHECKBOX_REGEX } from '../constants';
 import { PluginSettings } from '../settings';
+import { TaskLink, NoteMirrorLink } from '../models/TaskLink';
+
+interface CachedTaskInfo {
+    sourcePath: string;
+    checked: boolean;
+    linkId: string;
+    linkType: 'priority-scan' | 'note-mirror';
+}
 
 /**
  * Service for syncing task completion from source files to daily note.
- * When a synced task in a source file is checked/unchecked, update the daily note.
+ * Supports multiple links with link-type-aware matching.
  */
 export class SourceToDailySyncService {
     private eventRef: EventRef | null = null;
     private dailyNotePath: string | null = null;
-    private isProcessing = false;
+    private links: TaskLink[] = [];
 
-    // Cache of synced tasks: maps cleanText -> { sourcePath, checked }
-    private syncedTasksCache: Map<string, { sourcePath: string; checked: boolean }> = new Map();
+    // Cache: displayText → CachedTaskInfo
+    private syncedTasksCache: Map<string, CachedTaskInfo> = new Map();
 
     constructor(
         private app: App,
         private dailyNoteService: DailyNoteService,
-        private settings: PluginSettings
+        private settings: PluginSettings,
+        private pluginModifiedFiles: Set<string>
     ) { }
 
-    /**
-     * Start watching source files for changes.
-     * @param dailyNote - The daily note file to update
-     */
-    async startWatching(dailyNote: TFile): Promise<void> {
+    async startWatching(dailyNote: TFile, links: TaskLink[]): Promise<void> {
+        this.stopWatching();
         this.dailyNotePath = dailyNote.path;
+        this.links = links;
 
-        // Build initial cache of synced tasks from daily note
         await this.buildSyncedTasksCache(dailyNote);
 
-        // Watch for file modifications
         this.eventRef = this.app.vault.on('modify', async (file) => {
             if (file instanceof TFile && file.path !== this.dailyNotePath) {
-                // Source file modified, check if it contains synced tasks
                 await this.handleSourceFileModified(file);
             }
         });
     }
 
-    /**
-     * Stop watching.
-     */
     stopWatching(): void {
         if (this.eventRef) {
             this.app.vault.offref(this.eventRef);
@@ -51,35 +52,54 @@ export class SourceToDailySyncService {
         }
         this.syncedTasksCache.clear();
         this.dailyNotePath = null;
+        this.links = [];
     }
 
-    /**
-     * Build cache of synced tasks from daily note.
-     * Extracts tasks that have source file links.
-     */
     private async buildSyncedTasksCache(dailyNote: TFile): Promise<void> {
         this.syncedTasksCache.clear();
 
         try {
             const content = await this.app.vault.read(dailyNote);
+            const boundaries = this.dailyNoteService.findSectionBoundaries(content, this.links);
             const lines = content.split('\n');
 
-            for (const line of lines) {
-                // Match checkboxes
-                if (!TaskParser.isCheckbox(line)) continue;
+            for (const [linkId, range] of boundaries) {
+                const link = this.links.find(l => l.id === linkId);
+                if (!link) continue;
 
-                // Extract source path from wikilink
-                const sourcePath = TaskParser.extractSourcePath(line, this.app);
-                if (!sourcePath) continue;
+                for (let i = range.contentStart; i <= range.contentEnd; i++) {
+                    let line = lines[i];
 
-                // Get clean text for matching
-                const cleanText = TaskParser.cleanTaskText(line);
-                const isChecked = TaskParser.isCompleted(line);
+                    // Strip callout prefix if collapsible
+                    if (link.collapsible) {
+                        line = TaskParser.stripCalloutPrefix(line);
+                    }
 
-                this.syncedTasksCache.set(cleanText, {
-                    sourcePath,
-                    checked: isChecked
-                });
+                    if (!TaskParser.isCheckbox(line)) continue;
+
+                    const isChecked = TaskParser.isCompleted(line);
+                    let sourcePath: string;
+                    let displayText: string;
+
+                    if (link.type === 'priority-scan') {
+                        // Source from wikilink
+                        const extracted = TaskParser.extractSourcePath(line, this.app);
+                        if (!extracted) continue;
+                        sourcePath = extracted;
+                        displayText = TaskParser.cleanTaskText(line);
+                    } else {
+                        // Source from link config
+                        sourcePath = (link as NoteMirrorLink).sourceNotePath;
+                        displayText = TaskParser.trimCheckbox(line);
+                    }
+
+                    this.syncedTasksCache.set(displayText, {
+                        sourcePath,
+                        checked: isChecked,
+                        linkId: link.id,
+                        linkType: link.type,
+                    });
+                }
             }
         } catch (error) {
             if (this.settings.enableDebugLogging) {
@@ -88,57 +108,58 @@ export class SourceToDailySyncService {
         }
     }
 
-    /**
-     * Handle source file modification - check if any synced tasks changed.
-     */
     private async handleSourceFileModified(file: TFile): Promise<void> {
-        if (this.isProcessing) return;
+        // Skip if the plugin just wrote to this file
+        if (this.pluginModifiedFiles.has(file.path)) return;
 
-        // Check if this file has any synced tasks
         const tasksInFile = Array.from(this.syncedTasksCache.entries())
             .filter(([_, info]) => info.sourcePath === file.path);
 
         if (tasksInFile.length === 0) return;
 
         try {
-            // Read the source file and check task states
             const content = await this.app.vault.read(file);
             const lines = content.split('\n');
 
-            const changes: { cleanText: string; nowChecked: boolean }[] = [];
+            const changes: { displayText: string; nowChecked: boolean }[] = [];
 
-            for (const [cleanText, info] of tasksInFile) {
-                // Find this task in the source file
+            for (const [displayText, info] of tasksInFile) {
                 for (const line of lines) {
                     if (!TaskParser.isCheckbox(line)) continue;
-                    if (!TaskParser.extractPriority(line)) continue;
 
-                    const lineClean = TaskParser.cleanTaskText(line);
-                    if (lineClean === cleanText) {
-                        const isNowChecked = TaskParser.isCompleted(line);
-                        if (isNowChecked !== info.checked) {
-                            changes.push({ cleanText, nowChecked: isNowChecked });
+                    // For priority-scan: require priority emoji
+                    if (info.linkType === 'priority-scan') {
+                        if (!TaskParser.extractPriority(line)) continue;
+                        const lineDisplayText = TaskParser.cleanTaskText(line);
+                        if (lineDisplayText === displayText) {
+                            const isNowChecked = TaskParser.isCompleted(line);
+                            if (isNowChecked !== info.checked) {
+                                changes.push({ displayText, nowChecked: isNowChecked });
+                            }
+                            break;
                         }
-                        break;
+                    } else {
+                        // For note-mirror: match by trimCheckbox text
+                        const lineDisplayText = TaskParser.trimCheckbox(line);
+                        if (lineDisplayText === displayText) {
+                            const isNowChecked = TaskParser.isCompleted(line);
+                            if (isNowChecked !== info.checked) {
+                                changes.push({ displayText, nowChecked: isNowChecked });
+                            }
+                            break;
+                        }
                     }
                 }
             }
 
             if (changes.length === 0) return;
 
-            // Apply changes to daily note
-            this.isProcessing = true;
-            try {
-                for (const { cleanText, nowChecked } of changes) {
-                    await this.updateDailyNoteTask(cleanText, nowChecked);
-                    // Update cache
-                    const info = this.syncedTasksCache.get(cleanText);
-                    if (info) {
-                        info.checked = nowChecked;
-                    }
+            for (const { displayText, nowChecked } of changes) {
+                await this.updateDailyNoteTask(displayText, nowChecked);
+                const info = this.syncedTasksCache.get(displayText);
+                if (info) {
+                    info.checked = nowChecked;
                 }
-            } finally {
-                this.isProcessing = false;
             }
         } catch (error) {
             if (this.settings.enableDebugLogging) {
@@ -147,10 +168,7 @@ export class SourceToDailySyncService {
         }
     }
 
-    /**
-     * Update a task in the daily note.
-     */
-    private async updateDailyNoteTask(cleanText: string, checked: boolean): Promise<void> {
+    private async updateDailyNoteTask(displayText: string, checked: boolean): Promise<void> {
         if (!this.dailyNotePath) return;
 
         const dailyNote = this.app.vault.getAbstractFileByPath(this.dailyNotePath);
@@ -162,20 +180,26 @@ export class SourceToDailySyncService {
             let modified = false;
 
             for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (!TaskParser.isCheckbox(line)) continue;
+                let line = lines[i];
+                const originalLine = line;
 
-                const lineClean = TaskParser.cleanTaskText(line);
-                if (lineClean === cleanText) {
-                    // Update the checkbox
-                    const oldLine = line;
+                // Strip callout prefix for matching
+                const strippedLine = TaskParser.stripCalloutPrefix(line);
+
+                if (!TaskParser.isCheckbox(strippedLine)) continue;
+
+                // Try both cleaning methods for matching
+                const cleanedText = TaskParser.cleanTaskText(strippedLine);
+                const trimmedText = TaskParser.trimCheckbox(strippedLine);
+
+                if (cleanedText === displayText || trimmedText === displayText) {
                     let newLine: string;
                     if (checked) {
-                        newLine = oldLine.replace(/^(\s*-\s*)\[ \]/, '$1[x]');
+                        newLine = originalLine.replace(/^((?:>\s*)?(?:\s*)-\s*)\[ \]/, '$1[x]');
                     } else {
-                        newLine = oldLine.replace(/^(\s*-\s*)\[x\]/i, '$1[ ]');
+                        newLine = originalLine.replace(/^((?:>\s*)?(?:\s*)-\s*)\[[xX]\]/, '$1[ ]');
                     }
-                    if (newLine !== oldLine) {
+                    if (newLine !== originalLine) {
                         lines[i] = newLine;
                         modified = true;
                     }
@@ -184,7 +208,10 @@ export class SourceToDailySyncService {
             }
 
             if (modified) {
+                // Use shared processing guard
+                this.pluginModifiedFiles.add(dailyNote.path);
                 await this.app.vault.modify(dailyNote, lines.join('\n'));
+                setTimeout(() => this.pluginModifiedFiles.delete(dailyNote.path), 100);
             }
         } catch (error) {
             if (this.settings.enableDebugLogging) {

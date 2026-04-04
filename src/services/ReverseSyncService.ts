@@ -3,33 +3,31 @@ import { DailyNoteService } from './DailyNoteService';
 import { TaskParser, TaskState } from '../utils/TaskParser';
 import { CHECKBOX_REGEX } from '../constants';
 import { PluginSettings } from '../settings';
+import { TaskLink, NoteMirrorLink } from '../models/TaskLink';
 
 /**
  * Service for two-way checkbox sync between daily note and source files.
  * Detects checkbox changes in daily note and syncs to source files.
- * Handles both checking AND unchecking (bidirectional).
+ * Supports multiple links with section-scoped matching.
  */
 export class ReverseSyncService {
-    /** Cached task states for comparison */
     private taskStateCache: Map<number, TaskState> = new Map();
     private eventRef: EventRef | null = null;
     private dailyNotePath: string | null = null;
-    private isProcessing: boolean = false;
+    private links: TaskLink[] = [];
 
     constructor(
         private app: App,
         private dailyNoteService: DailyNoteService,
-        private settings: PluginSettings
+        private settings: PluginSettings,
+        private pluginModifiedFiles: Set<string>
     ) { }
 
-    /**
-     * Start watching the daily note for checkbox changes.
-     * Called when plugin loads or daily note changes.
-     */
-    async startWatching(dailyNote: TFile): Promise<void> {
+    async startWatching(dailyNote: TFile, links: TaskLink[]): Promise<void> {
+        this.stopWatching();
         this.dailyNotePath = dailyNote.path;
+        this.links = links;
 
-        // Build initial cache using TaskParser
         try {
             const content = await this.app.vault.read(dailyNote);
             this.taskStateCache = TaskParser.parseAllTaskStates(content, this.app);
@@ -40,7 +38,6 @@ export class ReverseSyncService {
             this.taskStateCache = new Map();
         }
 
-        // Set up file watcher for daily note only
         this.eventRef = this.app.vault.on('modify', async (file) => {
             if (file instanceof TFile && file.path === this.dailyNotePath) {
                 await this.handleDailyNoteModified(file);
@@ -48,9 +45,6 @@ export class ReverseSyncService {
         });
     }
 
-    /**
-     * Stop watching (cleanup on unload).
-     */
     stopWatching(): void {
         if (this.eventRef) {
             this.app.vault.offref(this.eventRef);
@@ -58,37 +52,37 @@ export class ReverseSyncService {
         }
         this.taskStateCache.clear();
         this.dailyNotePath = null;
+        this.links = [];
     }
 
-    /**
-     * Handle daily note modification.
-     * Uses multi-signal matching to detect checkbox toggles.
-     */
-    async handleDailyNoteModified(file: TFile): Promise<void> {
-        // Prevent re-entry during our own modifications
-        if (this.isProcessing) {
-            return;
-        }
+    private async handleDailyNoteModified(file: TFile): Promise<void> {
+        // Skip if the plugin just wrote to this file
+        if (this.pluginModifiedFiles.has(file.path)) return;
 
         try {
             const content = await this.app.vault.read(file);
             const newState = TaskParser.parseAllTaskStates(content, this.app);
 
-            // Find checkboxes that changed using multi-signal matching
             const changedTasks = TaskParser.findChangedTasks(this.taskStateCache, newState);
 
             if (changedTasks.length > 0) {
-                this.isProcessing = true;
-                try {
-                    for (const { state, nowChecked } of changedTasks) {
+                // Compute section boundaries to determine link ownership
+                const boundaries = this.dailyNoteService.findSectionBoundaries(content, this.links);
+
+                for (const { state, nowChecked } of changedTasks) {
+                    const ownerLink = this.findOwnerLink(state.lineNumber, boundaries);
+                    if (!ownerLink || !ownerLink.enableBidirectionalSync) continue;
+
+                    if (ownerLink.type === 'priority-scan') {
+                        // Use wikilink in task line to find source
                         await this.syncToggleToSource(state, nowChecked);
+                    } else if (ownerLink.type === 'note-mirror') {
+                        // Use link config for source path
+                        await this.syncToggleToSourceByConfig(state, nowChecked, ownerLink as NoteMirrorLink);
                     }
-                } finally {
-                    this.isProcessing = false;
                 }
             }
 
-            // Update cache to new state
             this.taskStateCache = newState;
         } catch (error) {
             if (this.settings.enableDebugLogging) {
@@ -98,13 +92,21 @@ export class ReverseSyncService {
     }
 
     /**
-     * Update the source file to match the daily note checkbox state.
-     * Finds matching line by cleanText and sets checkbox accordingly.
-     * 
-     * @param state - The task state from daily note
-     * @param checked - Whether to check or uncheck the source task
+     * Find which link owns a given line number based on section boundaries.
      */
-    async syncToggleToSource(state: TaskState, checked: boolean): Promise<boolean> {
+    private findOwnerLink(lineNumber: number, boundaries: Map<string, { start: number; contentStart: number; contentEnd: number }>): TaskLink | null {
+        for (const [linkId, range] of boundaries) {
+            if (lineNumber >= range.contentStart && lineNumber <= range.contentEnd) {
+                return this.links.find(l => l.id === linkId) ?? null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Sync a toggle to source using wikilink (priority-scan tasks).
+     */
+    private async syncToggleToSource(state: TaskState, checked: boolean): Promise<boolean> {
         if (!state.sourcePath) {
             if (this.settings.enableDebugLogging) {
                 console.debug('[TaskSync] No source path found in line, skipping reverse sync');
@@ -112,7 +114,6 @@ export class ReverseSyncService {
             return false;
         }
 
-        // Get source file
         const sourceFile = this.app.vault.getAbstractFileByPath(state.sourcePath);
         if (!(sourceFile instanceof TFile)) {
             if (this.settings.enableDebugLogging) {
@@ -121,32 +122,80 @@ export class ReverseSyncService {
             return false;
         }
 
+        return this.applyToggleToFile(sourceFile, state.displayText, checked);
+    }
+
+    /**
+     * Sync a toggle to source using link config (note-mirror tasks).
+     * Uses displayText as primary match key, lineNumber as tie-breaker.
+     */
+    private async syncToggleToSourceByConfig(state: TaskState, checked: boolean, link: NoteMirrorLink): Promise<boolean> {
+        const sourceFile = this.app.vault.getAbstractFileByPath(link.sourceNotePath);
+        if (!(sourceFile instanceof TFile)) {
+            if (this.settings.enableDebugLogging) {
+                console.debug(`[TaskSync] Source note not found: ${link.sourceNotePath}`);
+            }
+            return false;
+        }
+
+        // For note-mirror: match using trimCheckbox text (lightly cleaned)
+        const dailyDisplayText = TaskParser.stripCalloutPrefix(state.originalLine);
+        const displayText = TaskParser.trimCheckbox(dailyDisplayText);
+
+        return this.applyToggleToFile(sourceFile, displayText, checked, state.lineNumber, true);
+    }
+
+    /**
+     * Apply a checkbox toggle to a matching task in a source file.
+     */
+    private async applyToggleToFile(
+        sourceFile: TFile,
+        displayText: string,
+        checked: boolean,
+        hintLineNumber?: number,
+        useTrimCheckbox: boolean = false
+    ): Promise<boolean> {
         try {
-            // Read source file content
             const content = await this.app.vault.read(sourceFile);
             const lines = content.split('\n');
 
-            // Find matching task line by cleanText
-            let matchedIndex = -1;
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (!TaskParser.isCheckbox(line)) continue;
+            if (this.settings.enableDebugLogging) {
+                console.debug(`[TaskSync] applyToggleToFile: looking for "${displayText}" in ${sourceFile.path} (useTrimCheckbox=${useTrimCheckbox})`);
+            }
 
-                const lineCleanText = TaskParser.cleanTaskText(line);
-                if (lineCleanText === state.cleanText) {
-                    matchedIndex = i;
-                    break;
+            // Find all matching lines
+            const matches: number[] = [];
+            for (let i = 0; i < lines.length; i++) {
+                if (!TaskParser.isCheckbox(lines[i])) continue;
+                const lineText = useTrimCheckbox
+                    ? TaskParser.trimCheckbox(lines[i])
+                    : TaskParser.cleanTaskText(lines[i]);
+                if (lineText === displayText) {
+                    matches.push(i);
                 }
             }
 
-            if (matchedIndex === -1) {
+            if (matches.length === 0) {
                 if (this.settings.enableDebugLogging) {
-                    console.debug(`[TaskSync] No matching task found in source for: ${state.cleanText}`);
+                    console.debug(`[TaskSync] No matching task found in source for: "${displayText}"`);
+                    // Log first few source tasks for comparison
+                    const sampleSourceTexts = lines
+                        .filter(l => TaskParser.isCheckbox(l))
+                        .slice(0, 5)
+                        .map(l => useTrimCheckbox ? TaskParser.trimCheckbox(l) : TaskParser.cleanTaskText(l));
+                    console.debug(`[TaskSync] Sample source texts:`, sampleSourceTexts);
                 }
                 return false;
             }
 
-            // Update the checkbox state in source
+            // Pick the best match (closest to hintLineNumber if multiple matches)
+            let matchedIndex = matches[0];
+            if (matches.length > 1 && hintLineNumber !== undefined) {
+                matchedIndex = matches.reduce((closest, idx) =>
+                    Math.abs(idx - hintLineNumber) < Math.abs(closest - hintLineNumber) ? idx : closest
+                );
+            }
+
             const oldLine = lines[matchedIndex];
             let newLine: string;
             if (checked) {
@@ -155,23 +204,22 @@ export class ReverseSyncService {
                 newLine = oldLine.replace(/^(\s*-\s*)\[[xX]\]/, '$1[ ]');
             }
 
-            if (oldLine === newLine) {
-                if (this.settings.enableDebugLogging) {
-                    console.debug('[TaskSync] Source line already in correct state');
-                }
-                return false;
-            }
+            if (oldLine === newLine) return false;
 
             lines[matchedIndex] = newLine;
+
+            // Use shared processing guard
+            this.pluginModifiedFiles.add(sourceFile.path);
             await this.app.vault.modify(sourceFile, lines.join('\n'));
+            setTimeout(() => this.pluginModifiedFiles.delete(sourceFile.path), 100);
 
             if (this.settings.enableDebugLogging) {
-                console.debug(`[TaskSync] Synced ${checked ? 'check' : 'uncheck'} to ${state.sourcePath}`);
+                console.debug(`[TaskSync] Synced ${checked ? 'check' : 'uncheck'} to ${sourceFile.path}`);
             }
             return true;
         } catch (error) {
             if (this.settings.enableDebugLogging) {
-                console.warn(`[TaskSync] Failed to sync toggle to source file ${state.sourcePath}:`, error);
+                console.warn(`[TaskSync] Failed to sync toggle to source file ${sourceFile.path}:`, error);
             }
             return false;
         }
